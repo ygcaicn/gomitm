@@ -61,15 +61,8 @@ go build -o ./gomitm ./cmd/gomitm
 
 ## Built-in Pages
 
-- `http://198.18.0.1/`
-  - 无需先安装根证书即可访问（用于首次引导安装）
-  - 页面内可直接下载证书
-- `https://www4.google.com/`
-  - 返回 CA 安装页面（解决原站 404）
-  - 注意：该域名在浏览器中受 HSTS 影响，未信任根证书时通常不可继续访问
-  - 页面内可直接下载证书
-- `https://www4.google.com/gomitm-ca.crt`
-  - 直接下载当前实例根证书
+- `http://8.8.9.9/`
+  - 用于首次引导安装根证书
 
 ## Configuration
 
