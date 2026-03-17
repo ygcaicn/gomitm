@@ -95,16 +95,15 @@ jobs:
           set -e
 
           if [ $GET_EXIT -ne 0 ] || [ -z "${RELEASE_JSON}" ]; then
-            CREATE_PAYLOAD=$(cat <<JSON
-          {
-            "tag_name": "${VERSION}",
-            "name": "${VERSION}",
-            "body": "Automated release for ${VERSION}",
-            "draft": false,
-            "prerelease": false
-          }
-JSON
-            )
+            CREATE_PAYLOAD=$(jq -n \
+              --arg version "${VERSION}" \
+              '{
+                tag_name: $version,
+                name: $version,
+                body: ("Automated release for " + $version),
+                draft: false,
+                prerelease: false
+              }')
 
             RELEASE_JSON=$(curl -fsS -X POST \
               -H "Authorization: token ${TOKEN}" \
