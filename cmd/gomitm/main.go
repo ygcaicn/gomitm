@@ -43,9 +43,7 @@ type serveOptions struct {
 
 	MITMHosts []string
 
-	ModuleURLs  []string
-	ModuleFiles []string
-	ModuleArgs  map[string]string
+	ModuleSources []module.Source
 
 	CaptureEnabled      bool
 	CaptureMaxEntries   int
@@ -62,7 +60,7 @@ func defaultServeOptions() serveOptions {
 		CaptureMaxEntries:   defaultCaptureMaxEntries,
 		CaptureMaxBodyBytes: defaultCaptureMaxBody,
 		CaptureTypes:        splitCommaList(defaultCaptureContentType),
-		ModuleArgs:          map[string]string{},
+		ModuleSources:       []module.Source{},
 	}
 }
 
@@ -108,7 +106,7 @@ func runServe(args []string) error {
 	rewriteRules := []policy.RewriteRule{}
 	scriptRules := []policy.ScriptRule{}
 
-	parsedModule, err := module.LoadAllWithArgs(opts.ModuleURLs, opts.ModuleFiles, opts.ModuleArgs)
+	parsedModule, err := module.LoadSources(opts.ModuleSources)
 	if err != nil {
 		return err
 	}
@@ -223,14 +221,37 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	if visited["mitm-hosts"] {
 		opts.MITMHosts = splitCommaList(*mitmHosts)
 	}
+	cliModuleArgs := map[string]string{}
+	if visited["module-args"] {
+		cliModuleArgs = module.ParseModuleArgs(*moduleArgs)
+	}
 	if visited["module-urls"] {
-		opts.ModuleURLs = splitCommaList(*moduleURLs)
+		for _, u := range splitCommaList(*moduleURLs) {
+			opts.ModuleSources = append(opts.ModuleSources, module.Source{
+				Enabled:   true,
+				Path:      u,
+				Arguments: cloneMap(cliModuleArgs),
+			})
+		}
 	}
 	if visited["module-files"] {
-		opts.ModuleFiles = splitCommaList(*moduleFiles)
+		for _, f := range splitCommaList(*moduleFiles) {
+			opts.ModuleSources = append(opts.ModuleSources, module.Source{
+				Enabled:   true,
+				Path:      f,
+				Arguments: cloneMap(cliModuleArgs),
+			})
+		}
 	}
-	if visited["module-args"] {
-		opts.ModuleArgs = module.ParseModuleArgs(*moduleArgs)
+	if visited["module-args"] && len(cliModuleArgs) > 0 {
+		for i := range opts.ModuleSources {
+			if opts.ModuleSources[i].Arguments == nil {
+				opts.ModuleSources[i].Arguments = map[string]string{}
+			}
+			for k, v := range cliModuleArgs {
+				opts.ModuleSources[i].Arguments[k] = v
+			}
+		}
 	}
 	if visited["dial-timeout"] {
 		d, err := time.ParseDuration(strings.TrimSpace(*dialTimeout))
@@ -273,10 +294,6 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	if len(opts.CaptureTypes) == 0 {
 		opts.CaptureTypes = splitCommaList(defaultCaptureContentType)
 	}
-	if opts.ModuleArgs == nil {
-		opts.ModuleArgs = map[string]string{}
-	}
-
 	return opts, nil
 }
 
@@ -302,10 +319,21 @@ func applyConfigFile(opts *serveOptions, cfg *config.File) error {
 	}
 
 	opts.MITMHosts = append([]string{}, cfg.MITM.Hosts...)
-	opts.ModuleURLs = append([]string{}, cfg.Modules.URLs...)
-	opts.ModuleFiles = append([]string{}, cfg.Modules.Files...)
-	if cfg.Modules.Args != nil {
-		opts.ModuleArgs = cloneMap(cfg.Modules.Args)
+	opts.ModuleSources = nil
+	for _, m := range cfg.Modules {
+		enabled := true
+		if m.Enable != nil {
+			enabled = *m.Enable
+		}
+		if !enabled {
+			continue
+		}
+		opts.ModuleSources = append(opts.ModuleSources, module.Source{
+			Name:      m.Name,
+			Enabled:   enabled,
+			Path:      strings.TrimSpace(m.Path),
+			Arguments: stringifyArgs(m.Arguments),
+		})
 	}
 
 	opts.CaptureEnabled = cfg.Capture.Enabled
@@ -332,6 +360,28 @@ func cloneMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+func stringifyArgs(in map[string]any) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		switch vv := v.(type) {
+		case string:
+			out[k] = vv
+		case bool:
+			if vv {
+				out[k] = "true"
+			} else {
+				out[k] = "false"
+			}
+		default:
+			out[k] = fmt.Sprint(vv)
+		}
 	}
 	return out
 }

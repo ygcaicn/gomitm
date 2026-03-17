@@ -19,12 +19,15 @@ mitm:
   hosts:
     - "*.googlevideo.com"
 modules:
-  urls:
-    - "https://example.com/a.sgmodule"
-  files:
-    - "./local.sgmodule"
-  args:
-    foo: "bar"
+  - name: YouTubeNoAds
+    enable: true
+    path: "https://example.com/a.sgmodule"
+    arguments:
+      foo: "bar"
+      debug: false
+  - name: DisabledOne
+    enable: false
+    path: "./local.sgmodule"
 capture:
   enabled: true
   max_entries: 123
@@ -48,7 +51,13 @@ capture:
 	if cfg.Capture.MaxEntries != 123 {
 		t.Fatalf("max_entries got=%d", cfg.Capture.MaxEntries)
 	}
-	if cfg.Modules.Args["foo"] != "bar" {
-		t.Fatalf("arg foo got=%q", cfg.Modules.Args["foo"])
+	if len(cfg.Modules) != 2 {
+		t.Fatalf("modules len got=%d", len(cfg.Modules))
+	}
+	if cfg.Modules[0].Path != "https://example.com/a.sgmodule" {
+		t.Fatalf("module path got=%q", cfg.Modules[0].Path)
+	}
+	if cfg.Modules[0].Arguments["foo"] != "bar" {
+		t.Fatalf("arg foo got=%v", cfg.Modules[0].Arguments["foo"])
 	}
 }

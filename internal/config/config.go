@@ -8,10 +8,10 @@ import (
 )
 
 type File struct {
-	Serve   Serve   `yaml:"serve"`
-	MITM    MITM    `yaml:"mitm"`
-	Modules Modules `yaml:"modules"`
-	Capture Capture `yaml:"capture"`
+	Serve   Serve    `yaml:"serve"`
+	MITM    MITM     `yaml:"mitm"`
+	Modules []Module `yaml:"modules"`
+	Capture Capture  `yaml:"capture"`
 }
 
 type Serve struct {
@@ -25,10 +25,11 @@ type MITM struct {
 	Hosts []string `yaml:"hosts"`
 }
 
-type Modules struct {
-	URLs  []string          `yaml:"urls"`
-	Files []string          `yaml:"files"`
-	Args  map[string]string `yaml:"args"`
+type Module struct {
+	Name      string         `yaml:"name"`
+	Enable    *bool          `yaml:"enable"`
+	Path      string         `yaml:"path"`
+	Arguments map[string]any `yaml:"arguments"`
 }
 
 type Capture struct {

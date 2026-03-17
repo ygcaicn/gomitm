@@ -22,23 +22,25 @@ type Parsed struct {
 	Scripts   []policy.ScriptRule
 }
 
+type Source struct {
+	Name      string
+	Enabled   bool
+	Path      string
+	Arguments map[string]string
+}
+
 func LoadAll(urls []string, files []string) (*Parsed, error) {
 	return LoadAllWithArgs(urls, files, nil)
 }
 
 func LoadAllWithArgs(urls []string, files []string, args map[string]string) (*Parsed, error) {
-	combined := &Parsed{}
-
+	sources := make([]Source, 0, len(urls)+len(files))
 	for _, u := range urls {
 		u = strings.TrimSpace(u)
 		if u == "" {
 			continue
 		}
-		m, err := LoadFromURLWithArgs(u, args)
-		if err != nil {
-			return nil, err
-		}
-		combined.Merge(m)
+		sources = append(sources, Source{Enabled: true, Path: u, Arguments: cloneArgs(args)})
 	}
 
 	for _, f := range files {
@@ -46,13 +48,38 @@ func LoadAllWithArgs(urls []string, files []string, args map[string]string) (*Pa
 		if f == "" {
 			continue
 		}
-		m, err := LoadFromFileWithArgs(f, args)
+		sources = append(sources, Source{Enabled: true, Path: f, Arguments: cloneArgs(args)})
+	}
+	return LoadSources(sources)
+}
+
+func LoadSources(sources []Source) (*Parsed, error) {
+	combined := &Parsed{}
+	for _, src := range sources {
+		if !src.Enabled {
+			continue
+		}
+		path := strings.TrimSpace(src.Path)
+		if path == "" {
+			continue
+		}
+		var (
+			m   *Parsed
+			err error
+		)
+		if isURL(path) {
+			m, err = LoadFromURLWithArgs(path, src.Arguments)
+		} else {
+			m, err = LoadFromFileWithArgs(path, src.Arguments)
+		}
 		if err != nil {
+			if strings.TrimSpace(src.Name) != "" {
+				return nil, fmt.Errorf("module %s: %w", src.Name, err)
+			}
 			return nil, err
 		}
 		combined.Merge(m)
 	}
-
 	combined.DedupHosts()
 	if err := combined.LoadScriptCode(); err != nil {
 		return nil, err
@@ -477,4 +504,20 @@ func readScriptCode(client *http.Client, path string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func isURL(v string) bool {
+	lower := strings.ToLower(strings.TrimSpace(v))
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+}
+
+func cloneArgs(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

@@ -10,13 +10,13 @@ mitm:
     - "youtubei.googleapis.com"
 
 modules:
-  urls:
-    - "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
-  files: []
-  args:
-    字幕翻译语言: "off"
-    歌词翻译语言: "off"
-    启用调试模式: "false"
+  - name: YouTubeNoAds
+    enable: true
+    path: "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
+    arguments:
+      字幕翻译语言: "off"
+      歌词翻译语言: "off"
+      启用调试模式: false
 
 capture:
   enabled: true

@@ -26,9 +26,6 @@ gomitm ca init --ca-dir ~/.gomitm/ca
 gomitm ca export --ca-dir ~/.gomitm/ca --out ./gomitm-ca.crt
 gomitm serve --config ./config.example.yaml
 gomitm serve --listen :1080 --mitm-hosts "*.googlevideo.com,youtubei.googleapis.com"
-gomitm serve --listen :1080 --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
-gomitm serve --listen :1080 --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" --module-args "字幕翻译语言=ja,歌词翻译语言=ko,启用调试模式=true"
-gomitm serve --listen :1080 --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" --capture-enabled --har-out ./tmp/session.har
 gomitm serve --listen :1080 --admin-listen 127.0.0.1:19090 --capture-enabled
 ```
 
@@ -50,18 +47,9 @@ go run ./cmd/gomitm serve --listen :1080
 常用开发命令：
 
 ```bash
-# 带远程模块启动
-go run ./cmd/gomitm serve --listen :1080 \
-  --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
-
-# 带模块参数覆盖
-go run ./cmd/gomitm serve --listen :1080 \
-  --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" \
-  --module-args "字幕翻译语言=ja,歌词翻译语言=ko,启用调试模式=true"
-
 # 开启抓包并在退出时导出 HAR
 go run ./cmd/gomitm serve --listen :1080 \
-  --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" \
+  --config ./config.example.yaml \
   --capture-enabled --har-out ./tmp/session.har
 
 # 开启 Admin API（运行中查看抓包）
@@ -76,6 +64,11 @@ go run ./cmd/gomitm serve --config ./config.example.yaml
 # 配置文件 + 命令行覆盖（命令行优先）
 go run ./cmd/gomitm serve --config ./config.example.yaml --listen :2080 --capture-enabled=false
 
+# 仅临时追加远程模块（用于快速调试，配置文件仍然是主入口）
+go run ./cmd/gomitm serve --config ./config.example.yaml \
+  --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" \
+  --module-args "字幕翻译语言=ja,歌词翻译语言=ko,启用调试模式=true"
+
 # 构建二进制
 go build -o ./gomitm ./cmd/gomitm
 ```
@@ -83,6 +76,22 @@ go build -o ./gomitm ./cmd/gomitm
 配置文件参考：
 
 - [config.example.yaml](/Users/caiyagang/Downloads/gomitm/config.example.yaml)
+
+模块挂载模型（当前推荐）：
+
+```yaml
+modules:
+  - name: YouTubeNoAds
+    enable: true
+    path: "./modules/youtube.sgmodule" # 也支持 https:// URL
+    arguments:
+      屏蔽上传按钮: true
+      屏蔽Shorts按钮: true
+      启用调试模式: false
+  - name: BilibiliClean
+    enable: false
+    path: "https://raw.githubusercontent.com/example/bili.sgmodule"
+```
 
 ## 压力测试
 

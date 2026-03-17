@@ -15,6 +15,15 @@ serve:
   dial_timeout: "12s"
 mitm:
   hosts: ["a.com"]
+modules:
+  - name: one
+    enable: true
+    path: "https://example.com/a.sgmodule"
+    arguments:
+      "屏蔽上传按钮": true
+  - name: disabled
+    enable: false
+    path: "https://example.com/b.sgmodule"
 capture:
   enabled: true
   max_entries: 100
@@ -46,5 +55,52 @@ capture:
 	}
 	if len(opts.MITMHosts) != 1 || opts.MITMHosts[0] != "a.com" {
 		t.Fatalf("mitm hosts=%v", opts.MITMHosts)
+	}
+	if len(opts.ModuleSources) != 1 {
+		t.Fatalf("module sources len got=%d want=1", len(opts.ModuleSources))
+	}
+	if opts.ModuleSources[0].Path != "https://example.com/a.sgmodule" {
+		t.Fatalf("module path got=%q", opts.ModuleSources[0].Path)
+	}
+	if opts.ModuleSources[0].Arguments["屏蔽上传按钮"] != "true" {
+		t.Fatalf("module arg got=%q", opts.ModuleSources[0].Arguments["屏蔽上传按钮"])
+	}
+}
+
+func TestParseServeOptionsModuleArgsOverrideConfigModules(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	content := `
+modules:
+  - name: one
+    enable: true
+    path: "https://example.com/a.sgmodule"
+    arguments:
+      "屏蔽上传按钮": true
+      "字幕翻译语言": "off"
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts, err := parseServeOptions([]string{
+		"--config", cfgPath,
+		"--module-args", "屏蔽上传按钮=false,字幕翻译语言=ja,新增参数=x",
+	})
+	if err != nil {
+		t.Fatalf("parseServeOptions failed: %v", err)
+	}
+	if len(opts.ModuleSources) != 1 {
+		t.Fatalf("module sources len got=%d want=1", len(opts.ModuleSources))
+	}
+	args := opts.ModuleSources[0].Arguments
+	if args["屏蔽上传按钮"] != "false" {
+		t.Fatalf("屏蔽上传按钮 got=%q", args["屏蔽上传按钮"])
+	}
+	if args["字幕翻译语言"] != "ja" {
+		t.Fatalf("字幕翻译语言 got=%q", args["字幕翻译语言"])
+	}
+	if args["新增参数"] != "x" {
+		t.Fatalf("新增参数 got=%q", args["新增参数"])
 	}
 }
