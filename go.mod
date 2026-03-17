@@ -2,7 +2,10 @@ module gomitm
 
 go 1.22
 
-require github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
+require (
+	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
+	gopkg.in/yaml.v3 v3.0.1
+)
 
 require (
 	github.com/dlclark/regexp2 v1.11.4 // indirect

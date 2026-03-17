@@ -24,6 +24,7 @@
 ```bash
 gomitm ca init --ca-dir ~/.gomitm/ca
 gomitm ca export --ca-dir ~/.gomitm/ca --out ./gomitm-ca.crt
+gomitm serve --config ./config.example.yaml
 gomitm serve --listen :1080 --mitm-hosts "*.googlevideo.com,youtubei.googleapis.com"
 gomitm serve --listen :1080 --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
 gomitm serve --listen :1080 --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" --module-args "字幕翻译语言=ja,歌词翻译语言=ko,启用调试模式=true"
@@ -69,9 +70,19 @@ go run ./cmd/gomitm serve --listen :1080 --admin-listen 127.0.0.1:19090 --captur
 # GET /api/captures?limit=100
 # GET /api/captures.har
 
+# 通过配置文件启动
+go run ./cmd/gomitm serve --config ./config.example.yaml
+
+# 配置文件 + 命令行覆盖（命令行优先）
+go run ./cmd/gomitm serve --config ./config.example.yaml --listen :2080 --capture-enabled=false
+
 # 构建二进制
 go build -o ./gomitm ./cmd/gomitm
 ```
+
+配置文件参考：
+
+- [config.example.yaml](/Users/caiyagang/Downloads/gomitm/config.example.yaml)
 
 ## CI / Release
 

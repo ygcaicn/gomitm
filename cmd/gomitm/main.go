@@ -17,11 +17,54 @@ import (
 	"gomitm/internal/admin"
 	"gomitm/internal/ca"
 	"gomitm/internal/capture"
+	"gomitm/internal/config"
 	"gomitm/internal/har"
 	"gomitm/internal/module"
 	"gomitm/internal/policy"
 	"gomitm/internal/server"
 )
+
+const (
+	defaultListen             = ":1080"
+	defaultCADir              = "~/.gomitm/ca"
+	defaultDialTimeout        = 10 * time.Second
+	defaultCaptureMaxEntries  = 1000
+	defaultCaptureMaxBody     = 2 * 1024 * 1024
+	defaultCaptureContentType = "application/json,text/*"
+)
+
+type serveOptions struct {
+	ConfigPath string
+
+	Listen      string
+	AdminListen string
+	CADir       string
+	DialTimeout time.Duration
+
+	MITMHosts []string
+
+	ModuleURLs  []string
+	ModuleFiles []string
+	ModuleArgs  map[string]string
+
+	CaptureEnabled      bool
+	CaptureMaxEntries   int
+	CaptureMaxBodyBytes int64
+	CaptureTypes        []string
+	HAROut              string
+}
+
+func defaultServeOptions() serveOptions {
+	return serveOptions{
+		Listen:              defaultListen,
+		CADir:               defaultCADir,
+		DialTimeout:         defaultDialTimeout,
+		CaptureMaxEntries:   defaultCaptureMaxEntries,
+		CaptureMaxBodyBytes: defaultCaptureMaxBody,
+		CaptureTypes:        splitCommaList(defaultCaptureContentType),
+		ModuleArgs:          map[string]string{},
+	}
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -48,25 +91,12 @@ func main() {
 }
 
 func runServe(args []string) error {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	listen := fs.String("listen", ":1080", "SOCKS5 listen address")
-	caDir := fs.String("ca-dir", "~/.gomitm/ca", "CA storage directory")
-	mitmHosts := fs.String("mitm-hosts", "", "comma-separated MITM hosts, e.g. *.googlevideo.com,youtubei.googleapis.com")
-	moduleURLs := fs.String("module-urls", "", "comma-separated sgmodule URLs")
-	moduleFiles := fs.String("module-files", "", "comma-separated local sgmodule file paths")
-	moduleArgs := fs.String("module-args", "", "module argument overrides, e.g. key1=value1,key2=true")
-	dialTimeout := fs.Duration("dial-timeout", 10*time.Second, "upstream dial timeout")
-	captureEnabled := fs.Bool("capture-enabled", false, "enable MITM HTTP capture")
-	captureMaxEntries := fs.Int("capture-max-entries", 1000, "max in-memory capture entries")
-	captureMaxBodyBytes := fs.Int64("capture-max-body-bytes", 2*1024*1024, "max captured response body size in bytes")
-	captureTypes := fs.String("capture-content-types", "application/json,text/*", "comma-separated content-type filters")
-	harOut := fs.String("har-out", "", "export captured entries to HAR file on exit")
-	adminListen := fs.String("admin-listen", "", "admin HTTP listen address, e.g. 127.0.0.1:9090")
-	if err := fs.Parse(args); err != nil {
+	opts, err := parseServeOptions(args)
+	if err != nil {
 		return err
 	}
 
-	caManager, err := ca.EnsureCA(*caDir)
+	caManager, err := ca.EnsureCA(opts.CADir)
 	if err != nil {
 		return err
 	}
@@ -74,15 +104,11 @@ func runServe(args []string) error {
 	certPath, keyPath := caManager.Paths()
 	log.Printf("CA loaded: cert=%s key=%s", certPath, keyPath)
 
-	hosts := splitCommaList(*mitmHosts)
+	hosts := append([]string{}, opts.MITMHosts...)
 	rewriteRules := []policy.RewriteRule{}
 	scriptRules := []policy.ScriptRule{}
 
-	parsedModule, err := module.LoadAllWithArgs(
-		splitCommaList(*moduleURLs),
-		splitCommaList(*moduleFiles),
-		module.ParseModuleArgs(*moduleArgs),
-	)
+	parsedModule, err := module.LoadAllWithArgs(opts.ModuleURLs, opts.ModuleFiles, opts.ModuleArgs)
 	if err != nil {
 		return err
 	}
@@ -93,19 +119,19 @@ func runServe(args []string) error {
 		scriptRules = append(scriptRules, parsedModule.Scripts...)
 	}
 	log.Printf("policy loaded: mitm_hosts=%d rewrite_rules=%d scripts=%d", len(hosts), len(rewriteRules), len(scriptRules))
-	log.Printf("capture config: enabled=%v max_entries=%d max_body_bytes=%d har_out=%q", *captureEnabled, *captureMaxEntries, *captureMaxBodyBytes, *harOut)
+	log.Printf("capture config: enabled=%v max_entries=%d max_body_bytes=%d har_out=%q", opts.CaptureEnabled, opts.CaptureMaxEntries, opts.CaptureMaxBodyBytes, opts.HAROut)
 
 	srv := server.New(server.Config{
-		ListenAddr:  *listen,
-		DialTimeout: *dialTimeout,
+		ListenAddr:  opts.Listen,
+		DialTimeout: opts.DialTimeout,
 		MITMHosts:   hosts,
 		Rewrite:     rewriteRules,
 		Scripts:     scriptRules,
 		Capture: capture.Config{
-			Enabled:      *captureEnabled,
-			MaxEntries:   *captureMaxEntries,
-			MaxBodyBytes: *captureMaxBodyBytes,
-			ContentTypes: splitCommaList(*captureTypes),
+			Enabled:      opts.CaptureEnabled,
+			MaxEntries:   opts.CaptureMaxEntries,
+			MaxBodyBytes: opts.CaptureMaxBodyBytes,
+			ContentTypes: opts.CaptureTypes,
 		},
 	}, caManager, log.Default())
 
@@ -113,14 +139,14 @@ func runServe(args []string) error {
 	defer cancel()
 
 	var adminHTTP *http.Server
-	if strings.TrimSpace(*adminListen) != "" {
+	if strings.TrimSpace(opts.AdminListen) != "" {
 		adminHTTP = &http.Server{
-			Addr:              *adminListen,
+			Addr:              opts.AdminListen,
 			Handler:           admin.NewHandler(srv),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		go func() {
-			log.Printf("admin API listening on %s", *adminListen)
+			log.Printf("admin API listening on %s", opts.AdminListen)
 			if err := adminHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Printf("admin API error: %v", err)
 			}
@@ -133,17 +159,181 @@ func runServe(args []string) error {
 	}
 
 	listenErr := srv.ListenAndServe(ctx)
-	if *captureEnabled && strings.TrimSpace(*harOut) != "" {
+	if opts.CaptureEnabled && strings.TrimSpace(opts.HAROut) != "" {
 		entries := srv.CaptureEntries()
-		if err := har.ExportToFile(*harOut, entries); err != nil {
+		if err := har.ExportToFile(opts.HAROut, entries); err != nil {
 			return fmt.Errorf("export har: %w", err)
 		}
-		log.Printf("HAR exported: %s (entries=%d)", *harOut, len(entries))
+		log.Printf("HAR exported: %s (entries=%d)", opts.HAROut, len(entries))
 	}
 	if listenErr != nil && !errors.Is(listenErr, context.Canceled) {
 		return listenErr
 	}
 	return nil
+}
+
+func parseServeOptions(args []string) (serveOptions, error) {
+	opts := defaultServeOptions()
+
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	configPath := fs.String("config", "", "config file path (YAML)")
+	listen := fs.String("listen", "", "SOCKS5 listen address")
+	caDir := fs.String("ca-dir", "", "CA storage directory")
+	mitmHosts := fs.String("mitm-hosts", "", "comma-separated MITM hosts, e.g. *.googlevideo.com,youtubei.googleapis.com")
+	moduleURLs := fs.String("module-urls", "", "comma-separated sgmodule URLs")
+	moduleFiles := fs.String("module-files", "", "comma-separated local sgmodule file paths")
+	moduleArgs := fs.String("module-args", "", "module argument overrides, e.g. key1=value1,key2=true")
+	dialTimeout := fs.String("dial-timeout", "", "upstream dial timeout (e.g. 10s)")
+	captureEnabled := fs.Bool("capture-enabled", false, "enable MITM HTTP capture")
+	captureMaxEntries := fs.Int("capture-max-entries", 0, "max in-memory capture entries")
+	captureMaxBodyBytes := fs.Int64("capture-max-body-bytes", 0, "max captured response body size in bytes")
+	captureTypes := fs.String("capture-content-types", "", "comma-separated content-type filters")
+	harOut := fs.String("har-out", "", "export captured entries to HAR file on exit")
+	adminListen := fs.String("admin-listen", "", "admin HTTP listen address, e.g. 127.0.0.1:9090")
+
+	if err := fs.Parse(args); err != nil {
+		return opts, err
+	}
+
+	visited := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) {
+		visited[f.Name] = true
+	})
+
+	if strings.TrimSpace(*configPath) != "" {
+		opts.ConfigPath = strings.TrimSpace(*configPath)
+		cfg, err := config.LoadFile(opts.ConfigPath)
+		if err != nil {
+			return opts, err
+		}
+		if err := applyConfigFile(&opts, cfg); err != nil {
+			return opts, err
+		}
+	}
+
+	if visited["listen"] {
+		opts.Listen = strings.TrimSpace(*listen)
+	}
+	if visited["ca-dir"] {
+		opts.CADir = strings.TrimSpace(*caDir)
+	}
+	if visited["admin-listen"] {
+		opts.AdminListen = strings.TrimSpace(*adminListen)
+	}
+	if visited["mitm-hosts"] {
+		opts.MITMHosts = splitCommaList(*mitmHosts)
+	}
+	if visited["module-urls"] {
+		opts.ModuleURLs = splitCommaList(*moduleURLs)
+	}
+	if visited["module-files"] {
+		opts.ModuleFiles = splitCommaList(*moduleFiles)
+	}
+	if visited["module-args"] {
+		opts.ModuleArgs = module.ParseModuleArgs(*moduleArgs)
+	}
+	if visited["dial-timeout"] {
+		d, err := time.ParseDuration(strings.TrimSpace(*dialTimeout))
+		if err != nil {
+			return opts, fmt.Errorf("invalid --dial-timeout: %w", err)
+		}
+		opts.DialTimeout = d
+	}
+	if visited["capture-enabled"] {
+		opts.CaptureEnabled = *captureEnabled
+	}
+	if visited["capture-max-entries"] {
+		opts.CaptureMaxEntries = *captureMaxEntries
+	}
+	if visited["capture-max-body-bytes"] {
+		opts.CaptureMaxBodyBytes = *captureMaxBodyBytes
+	}
+	if visited["capture-content-types"] {
+		opts.CaptureTypes = splitCommaList(*captureTypes)
+	}
+	if visited["har-out"] {
+		opts.HAROut = strings.TrimSpace(*harOut)
+	}
+
+	if opts.Listen == "" {
+		opts.Listen = defaultListen
+	}
+	if opts.CADir == "" {
+		opts.CADir = defaultCADir
+	}
+	if opts.DialTimeout <= 0 {
+		opts.DialTimeout = defaultDialTimeout
+	}
+	if opts.CaptureMaxEntries <= 0 {
+		opts.CaptureMaxEntries = defaultCaptureMaxEntries
+	}
+	if opts.CaptureMaxBodyBytes <= 0 {
+		opts.CaptureMaxBodyBytes = defaultCaptureMaxBody
+	}
+	if len(opts.CaptureTypes) == 0 {
+		opts.CaptureTypes = splitCommaList(defaultCaptureContentType)
+	}
+	if opts.ModuleArgs == nil {
+		opts.ModuleArgs = map[string]string{}
+	}
+
+	return opts, nil
+}
+
+func applyConfigFile(opts *serveOptions, cfg *config.File) error {
+	if opts == nil || cfg == nil {
+		return nil
+	}
+	if cfg.Serve.Listen != "" {
+		opts.Listen = strings.TrimSpace(cfg.Serve.Listen)
+	}
+	if cfg.Serve.AdminListen != "" {
+		opts.AdminListen = strings.TrimSpace(cfg.Serve.AdminListen)
+	}
+	if cfg.Serve.CADir != "" {
+		opts.CADir = strings.TrimSpace(cfg.Serve.CADir)
+	}
+	if strings.TrimSpace(cfg.Serve.DialTimeout) != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(cfg.Serve.DialTimeout))
+		if err != nil {
+			return fmt.Errorf("invalid config serve.dial_timeout: %w", err)
+		}
+		opts.DialTimeout = d
+	}
+
+	opts.MITMHosts = append([]string{}, cfg.MITM.Hosts...)
+	opts.ModuleURLs = append([]string{}, cfg.Modules.URLs...)
+	opts.ModuleFiles = append([]string{}, cfg.Modules.Files...)
+	if cfg.Modules.Args != nil {
+		opts.ModuleArgs = cloneMap(cfg.Modules.Args)
+	}
+
+	opts.CaptureEnabled = cfg.Capture.Enabled
+	if cfg.Capture.MaxEntries > 0 {
+		opts.CaptureMaxEntries = cfg.Capture.MaxEntries
+	}
+	if cfg.Capture.MaxBodyBytes > 0 {
+		opts.CaptureMaxBodyBytes = cfg.Capture.MaxBodyBytes
+	}
+	if len(cfg.Capture.ContentTypes) > 0 {
+		opts.CaptureTypes = append([]string{}, cfg.Capture.ContentTypes...)
+	}
+	if cfg.Capture.HAROut != "" {
+		opts.HAROut = strings.TrimSpace(cfg.Capture.HAROut)
+	}
+
+	return nil
+}
+
+func cloneMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func runCA(args []string) error {
@@ -240,6 +430,7 @@ Usage:
 Examples:
   gomitm serve --listen :1080 --mitm-hosts "*.googlevideo.com,youtubei.googleapis.com"
   gomitm serve --listen :1080 --module-urls "https://example.com/YouTubeNoAd.sgmodule"
+  gomitm serve --config ./config.yaml
   gomitm ca init --ca-dir ~/.gomitm/ca
   gomitm ca export --ca-dir ~/.gomitm/ca --out ./gomitm-ca.crt
 `)

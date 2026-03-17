@@ -1,0 +1,28 @@
+serve:
+  listen: ":1080"
+  admin_listen: "127.0.0.1:19090"
+  ca_dir: "~/.gomitm/ca"
+  dial_timeout: "10s"
+
+mitm:
+  hosts:
+    - "*.googlevideo.com"
+    - "youtubei.googleapis.com"
+
+modules:
+  urls:
+    - "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
+  files: []
+  args:
+    字幕翻译语言: "off"
+    歌词翻译语言: "off"
+    启用调试模式: "false"
+
+capture:
+  enabled: true
+  max_entries: 1000
+  max_body_bytes: 2097152
+  content_types:
+    - "application/json"
+    - "text/*"
+  har_out: "./tmp/session.har"
