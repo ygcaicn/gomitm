@@ -124,3 +124,37 @@ $done({ bodyBytes: b, headers: {"x-binary":"1"} });
 		t.Fatalf("header x-binary got=%q", resp.Header.Get("x-binary"))
 	}
 }
+
+func TestApplyRequestScript(t *testing.T) {
+	engine := NewEngine()
+	rule := policy.ScriptRule{
+		Name:         "req",
+		Type:         policy.ScriptTypeHTTPRequest,
+		Pattern:      regexp.MustCompile(`^https://example\.com/path$`),
+		RequiresBody: false,
+		MaxSize:      1024,
+		Code: `
+let h = $request.headers;
+h["x-req"] = "1";
+$done({ url: "https://example.com/newpath", headers: h, method: "POST" });
+`,
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com/path", nil)
+	ok, err := engine.ApplyRequestScripts(req, []policy.ScriptRule{rule})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected request script to run")
+	}
+	if req.URL.String() != "https://example.com/newpath" {
+		t.Fatalf("url got=%q", req.URL.String())
+	}
+	if req.Method != http.MethodPost {
+		t.Fatalf("method got=%q", req.Method)
+	}
+	if req.Header.Get("x-req") != "1" {
+		t.Fatalf("header x-req got=%q", req.Header.Get("x-req"))
+	}
+}

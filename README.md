@@ -14,7 +14,7 @@
 - 支持加载 Surge-like 模块子集：
   - `[MITM] hostname`
   - `[URL Rewrite] ... - reject/reject-200`
-- 支持 `[Script]` 子集（`type=http-response`）并执行 JS（goja）
+- 支持 `[Script]` 子集（`type=http-request` / `type=http-response`）并执行 JS（goja）
 - 支持 `binary-body-mode=true` 的响应体字节数组改写（`bodyBytes`）
 - 支持 MITM 抓包并在退出时导出 HAR 文件
 

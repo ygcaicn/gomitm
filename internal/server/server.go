@@ -359,6 +359,10 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 			continue
 		}
 
+		if _, err := s.engine.ApplyRequestScripts(req, s.scripts); err != nil {
+			s.logger.Printf("request script execution failed: %v", err)
+		}
+
 		outReq := req.Clone(req.Context())
 		outReq.RequestURI = ""
 		if outReq.URL.Scheme == "" {

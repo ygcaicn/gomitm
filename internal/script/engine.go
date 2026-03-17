@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -18,6 +19,43 @@ type Engine struct{}
 
 func NewEngine() *Engine {
 	return &Engine{}
+}
+
+func (e *Engine) ApplyRequestScripts(req *http.Request, rules []policy.ScriptRule) (bool, error) {
+	if req == nil || len(rules) == 0 {
+		return false, nil
+	}
+
+	applied := false
+	for _, rule := range rules {
+		if rule.Type != policy.ScriptTypeHTTPRequest || !rule.Match(fullURL(req)) {
+			continue
+		}
+		if strings.TrimSpace(rule.Code) == "" {
+			continue
+		}
+
+		var bodyBytes []byte
+		if rule.RequiresBody {
+			var err error
+			bodyBytes, err = readAndResetRequestBody(req)
+			if err != nil {
+				return applied, err
+			}
+			if rule.MaxSize > 0 && int64(len(bodyBytes)) > rule.MaxSize {
+				continue
+			}
+		}
+
+		changed, err := executeRequestScript(rule, req, bodyBytes)
+		if err != nil {
+			return applied, fmt.Errorf("script %s: %w", rule.Name, err)
+		}
+		if changed {
+			applied = true
+		}
+	}
+	return applied, nil
 }
 
 func (e *Engine) ApplyResponseScripts(req *http.Request, resp *http.Response, rules []policy.ScriptRule) (bool, error) {
@@ -53,6 +91,95 @@ func (e *Engine) ApplyResponseScripts(req *http.Request, resp *http.Response, ru
 		}
 	}
 	return applied, nil
+}
+
+func executeRequestScript(rule policy.ScriptRule, req *http.Request, body []byte) (bool, error) {
+	vm := goja.New()
+
+	reqHeaders := headersToJS(req.Header)
+	requestObj := map[string]any{
+		"url":     fullURL(req),
+		"method":  req.Method,
+		"headers": reqHeaders,
+		"body":    string(body),
+	}
+	if rule.BinaryBodyMode {
+		requestObj["bodyBytes"] = append([]byte(nil), body...)
+	}
+
+	if err := vm.Set("$request", requestObj); err != nil {
+		return false, err
+	}
+	if err := vm.Set("$argument", rule.Argument); err != nil {
+		return false, err
+	}
+
+	var (
+		doneCalled bool
+		override   map[string]any
+	)
+	if err := vm.Set("$done", func(call goja.FunctionCall) goja.Value {
+		doneCalled = true
+		if len(call.Arguments) > 0 {
+			if m, ok := call.Arguments[0].Export().(map[string]any); ok {
+				override = m
+			}
+		}
+		return goja.Undefined()
+	}); err != nil {
+		return false, err
+	}
+
+	if _, err := vm.RunString(rule.Code); err != nil {
+		return false, err
+	}
+	if !doneCalled {
+		return false, nil
+	}
+
+	if override == nil {
+		return true, nil
+	}
+
+	if v, ok := override["url"]; ok {
+		newURL := strings.TrimSpace(fmt.Sprint(v))
+		if newURL != "" {
+			parsed, err := url.Parse(newURL)
+			if err != nil {
+				return false, err
+			}
+			req.URL = parsed
+			req.Host = parsed.Host
+		}
+	}
+	if v, ok := override["method"]; ok {
+		method := strings.TrimSpace(strings.ToUpper(fmt.Sprint(v)))
+		if method != "" {
+			req.Method = method
+		}
+	}
+	if v, ok := override["headers"]; ok {
+		if req.Header == nil {
+			req.Header = make(http.Header)
+		}
+		applyHeadersOverride(req.Header, v)
+	}
+
+	newBody := body
+	if v, ok := override["bodyBytes"]; ok {
+		if b, ok := toBytes(v); ok {
+			newBody = b
+		}
+	}
+	if v, ok := override["body"]; ok {
+		newBody = []byte(fmt.Sprint(v))
+	}
+	if rule.RequiresBody {
+		req.Body = io.NopCloser(bytes.NewReader(newBody))
+		req.ContentLength = int64(len(newBody))
+		req.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
+	}
+	return true, nil
 }
 
 func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http.Response, body []byte) (*http.Response, bool, error) {
@@ -117,11 +244,7 @@ func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http
 			}
 		}
 		if v, ok := override["headers"]; ok {
-			if hm, ok := v.(map[string]any); ok {
-				for k, vv := range hm {
-					out.Header.Set(k, fmt.Sprint(vv))
-				}
-			}
+			applyHeadersOverride(out.Header, v)
 		}
 		if v, ok := override["bodyBytes"]; ok {
 			if b, ok := toBytes(v); ok {
@@ -155,6 +278,23 @@ func readAndResetBody(resp *http.Response) ([]byte, error) {
 	resp.ContentLength = int64(len(body))
 	if resp.Header != nil {
 		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	}
+	return body, nil
+}
+
+func readAndResetRequestBody(req *http.Request) ([]byte, error) {
+	if req == nil || req.Body == nil {
+		return nil, nil
+	}
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	if req.Header != nil {
+		req.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	}
 	return body, nil
 }
@@ -227,5 +367,21 @@ func toBytes(v any) ([]byte, bool) {
 		return out, true
 	default:
 		return nil, false
+	}
+}
+
+func applyHeadersOverride(dst http.Header, v any) {
+	if dst == nil {
+		return
+	}
+	switch hm := v.(type) {
+	case map[string]any:
+		for k, vv := range hm {
+			dst.Set(k, fmt.Sprint(vv))
+		}
+	case map[string]string:
+		for k, vv := range hm {
+			dst.Set(k, vv)
+		}
 	}
 }
