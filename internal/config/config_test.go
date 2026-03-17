@@ -19,8 +19,11 @@ serve:
   udp_idle_timeout: "3m"
 mitm:
   all: true
+  fail_open: true
   hosts:
     - "*.googlevideo.com"
+  bypass_hosts:
+    - "youtubei.googleapis.com"
 modules:
   - name: YouTubeNoAds
     enable: true
@@ -62,6 +65,12 @@ capture:
 	}
 	if !cfg.MITM.All {
 		t.Fatal("mitm.all should be true")
+	}
+	if !cfg.MITM.FailOpen {
+		t.Fatal("mitm.fail_open should be true")
+	}
+	if len(cfg.MITM.BypassHosts) != 1 || cfg.MITM.BypassHosts[0] != "youtubei.googleapis.com" {
+		t.Fatalf("mitm.bypass_hosts got=%v", cfg.MITM.BypassHosts)
 	}
 	if len(cfg.Modules) != 2 {
 		t.Fatalf("modules len got=%d", len(cfg.Modules))

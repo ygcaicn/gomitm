@@ -18,6 +18,8 @@ serve:
 mitm:
   all: false
   hosts: ["a.com"]
+  bypass_hosts: ["b.com"]
+  fail_open: true
 modules:
   - name: one
     enable: true
@@ -65,6 +67,12 @@ capture:
 	if len(opts.MITMHosts) != 1 || opts.MITMHosts[0] != "a.com" {
 		t.Fatalf("mitm hosts=%v", opts.MITMHosts)
 	}
+	if len(opts.MITMBypassHosts) != 1 || opts.MITMBypassHosts[0] != "b.com" {
+		t.Fatalf("mitm bypass hosts=%v", opts.MITMBypassHosts)
+	}
+	if !opts.MITMFailOpen {
+		t.Fatal("mitm fail-open should come from config")
+	}
 	if opts.MITMAll {
 		t.Fatal("mitm all should be false from config")
 	}
@@ -83,6 +91,8 @@ func TestParseServeOptionsUDPCLIOverride(t *testing.T) {
 	opts, err := parseServeOptions([]string{
 		"--udp-max-sessions", "123",
 		"--udp-idle-timeout", "45s",
+		"--mitm-bypass-hosts", "x.com,*.y.com",
+		"--mitm-fail-open=true",
 	})
 	if err != nil {
 		t.Fatalf("parseServeOptions failed: %v", err)
@@ -92,6 +102,12 @@ func TestParseServeOptionsUDPCLIOverride(t *testing.T) {
 	}
 	if opts.UDPIdleTimeout.String() != "45s" {
 		t.Fatalf("udp idle timeout got=%s", opts.UDPIdleTimeout)
+	}
+	if len(opts.MITMBypassHosts) != 2 || opts.MITMBypassHosts[0] != "x.com" || opts.MITMBypassHosts[1] != "*.y.com" {
+		t.Fatalf("mitm bypass hosts=%v", opts.MITMBypassHosts)
+	}
+	if !opts.MITMFailOpen {
+		t.Fatal("mitm fail open should be true")
 	}
 }
 

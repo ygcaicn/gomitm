@@ -24,8 +24,10 @@ type Serve struct {
 }
 
 type MITM struct {
-	All   bool     `yaml:"all"`
-	Hosts []string `yaml:"hosts"`
+	All         bool     `yaml:"all"`
+	Hosts       []string `yaml:"hosts"`
+	BypassHosts []string `yaml:"bypass_hosts"`
+	FailOpen    bool     `yaml:"fail_open"`
 }
 
 type Module struct {

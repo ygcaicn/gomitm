@@ -15,6 +15,7 @@ import (
 
 	"gomitm/internal/ca"
 	"gomitm/internal/capture"
+	"gomitm/internal/domain"
 	"gomitm/internal/policy"
 )
 
@@ -147,6 +148,53 @@ func TestShouldMITMAll(t *testing.T) {
 	}
 	if s.shouldMITM("example.com", 80) {
 		t.Fatal("mitm all should not force non-443 ports")
+	}
+}
+
+func TestShouldMITMBypassHosts(t *testing.T) {
+	s := &Server{
+		cfg:           Config{MITMAll: true},
+		matcher:       domain.NewMatcher([]string{"example.com"}),
+		bypass:        domain.NewMatcher([]string{"youtubei.googleapis.com", "*.googlevideo.com"}),
+		failOpenHosts: map[string]struct{}{},
+	}
+	if s.shouldMITM("youtubei.googleapis.com", 443) {
+		t.Fatal("bypass host should not mitm")
+	}
+	if s.shouldMITM("rr5---sn-a5mlrnl6.googlevideo.com", 443) {
+		t.Fatal("bypass wildcard host should not mitm")
+	}
+	if !s.shouldMITM("example.com", 443) {
+		t.Fatal("non-bypass host should still mitm")
+	}
+}
+
+func TestLearnFailOpenHost(t *testing.T) {
+	s := &Server{
+		failOpenHosts: map[string]struct{}{},
+	}
+	s.learnFailOpenHost("YouTubei.googleapis.com:443")
+	s.learnFailOpenHost("youtubei.googleapis.com")
+	if !s.shouldBypassMITM("youtubei.googleapis.com") {
+		t.Fatal("learned host should bypass mitm")
+	}
+	if got := s.learnedBypassCount(); got != 1 {
+		t.Fatalf("learned bypass count=%d", got)
+	}
+	if got := s.mitmFailOpenLearned.Load(); got != 1 {
+		t.Fatalf("fail-open learned total=%d", got)
+	}
+}
+
+func TestShouldFailOpenMITMError(t *testing.T) {
+	if !shouldFailOpenMITMError(errors.New("client tls handshake: remote error: tls: unknown certificate")) {
+		t.Fatal("unknown certificate should trigger fail-open")
+	}
+	if !shouldFailOpenMITMError(errors.New("remote error: tls: bad certificate")) {
+		t.Fatal("bad certificate should trigger fail-open")
+	}
+	if shouldFailOpenMITMError(errors.New("read request: unexpected EOF")) {
+		t.Fatal("unexpected EOF should not trigger fail-open")
 	}
 }
 

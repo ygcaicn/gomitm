@@ -51,22 +51,26 @@ const (
 )
 
 type Config struct {
-	ListenAddr     string
-	DialTimeout    time.Duration
-	MITMHosts      []string
-	MITMAll        bool
-	Rewrite        []policy.RewriteRule
-	Scripts        []policy.ScriptRule
-	UDPRules       []policy.UDPRule
-	UDPMaxSessions int
-	UDPIdleTimeout time.Duration
-	Capture        capture.Config
+	ListenAddr      string
+	DialTimeout     time.Duration
+	MITMHosts       []string
+	MITMAll         bool
+	MITMBypassHosts []string
+	MITMFailOpen    bool
+	Rewrite         []policy.RewriteRule
+	Scripts         []policy.ScriptRule
+	UDPRules        []policy.UDPRule
+	UDPMaxSessions  int
+	UDPIdleTimeout  time.Duration
+	Capture         capture.Config
 }
 
 type Server struct {
 	cfg       Config
 	ca        *ca.Manager
 	matcher   *domain.Matcher
+	bypass    *domain.Matcher
+	failOpen  bool
 	rewrite   []policy.RewriteRule
 	scripts   []policy.ScriptRule
 	udpRules  []policy.UDPRule
@@ -87,10 +91,15 @@ type Server struct {
 	udpPolicyRejectTotal atomic.Uint64
 	udpParseErrorTotal   atomic.Uint64
 	udpFragDropTotal     atomic.Uint64
+	mitmFailOpenLearned  atomic.Uint64
+
+	failOpenMu    sync.RWMutex
+	failOpenHosts map[string]struct{}
 }
 
 type Stats struct {
-	UDP UDPStats `json:"udp"`
+	UDP  UDPStats  `json:"udp"`
+	MITM MITMStats `json:"mitm"`
 }
 
 type UDPStats struct {
@@ -105,6 +114,13 @@ type UDPStats struct {
 	PolicyReject   uint64 `json:"policy_reject"`
 	ParseError     uint64 `json:"parse_error"`
 	FragmentDrop   uint64 `json:"fragment_drop"`
+}
+
+type MITMStats struct {
+	FailOpenEnabled bool   `json:"fail_open_enabled"`
+	StaticBypass    int    `json:"static_bypass_hosts"`
+	LearnedBypass   int    `json:"learned_bypass_hosts"`
+	FailOpenLearned uint64 `json:"fail_open_learned_total"`
 }
 
 type responseSnapshot struct {
@@ -153,17 +169,20 @@ func New(cfg Config, caManager *ca.Manager, logger *log.Logger) *Server {
 	}
 
 	return &Server{
-		cfg:       cfg,
-		ca:        caManager,
-		matcher:   domain.NewMatcher(cfg.MITMHosts),
-		rewrite:   cfg.Rewrite,
-		scripts:   cfg.Scripts,
-		udpRules:  cfg.UDPRules,
-		engine:    script.NewEngine(),
-		transport: transport,
-		capCfg:    cfg.Capture,
-		capStore:  capStore,
-		logger:    logger,
+		cfg:           cfg,
+		ca:            caManager,
+		matcher:       domain.NewMatcher(cfg.MITMHosts),
+		bypass:        domain.NewMatcher(cfg.MITMBypassHosts),
+		failOpen:      cfg.MITMFailOpen,
+		rewrite:       cfg.Rewrite,
+		scripts:       cfg.Scripts,
+		udpRules:      cfg.UDPRules,
+		engine:        script.NewEngine(),
+		transport:     transport,
+		capCfg:        cfg.Capture,
+		capStore:      capStore,
+		logger:        logger,
+		failOpenHosts: map[string]struct{}{},
 	}
 }
 
@@ -191,6 +210,12 @@ func (s *Server) Stats() Stats {
 			PolicyReject:   s.udpPolicyRejectTotal.Load(),
 			ParseError:     s.udpParseErrorTotal.Load(),
 			FragmentDrop:   s.udpFragDropTotal.Load(),
+		},
+		MITM: MITMStats{
+			FailOpenEnabled: s.failOpen,
+			StaticBypass:    len(s.cfg.MITMBypassHosts),
+			LearnedBypass:   s.learnedBypassCount(),
+			FailOpenLearned: s.mitmFailOpenLearned.Load(),
 		},
 	}
 }
@@ -287,6 +312,10 @@ func (s *Server) handleConn(client net.Conn) {
 		s.logger.Printf("MITM %s", target)
 		if err := s.handleMITM(client, host, port); err != nil {
 			s.logger.Printf("mitm failed for %s: %v", target, err)
+			if s.failOpen && shouldFailOpenMITMError(err) {
+				s.learnFailOpenHost(host)
+				s.logger.Printf("mitm fail-open learned bypass host=%s", normalizeHost(host))
+			}
 		}
 		return
 	}
@@ -313,13 +342,69 @@ func (s *Server) shouldMITM(host string, port int) bool {
 	if port != 443 {
 		return false
 	}
-	if s.cfg.MITMAll {
-		return true
-	}
 	if isBuiltinCAPortalHost(host) {
 		return true
 	}
+	if s.shouldBypassMITM(host) {
+		return false
+	}
+	if s.cfg.MITMAll {
+		return true
+	}
 	return s.matcher.Match(normalizeHost(host))
+}
+
+func (s *Server) shouldBypassMITM(host string) bool {
+	h := normalizeHost(host)
+	if h == "" {
+		return false
+	}
+	if s.bypass != nil && s.bypass.Match(h) {
+		return true
+	}
+	s.failOpenMu.RLock()
+	_, ok := s.failOpenHosts[h]
+	s.failOpenMu.RUnlock()
+	return ok
+}
+
+func (s *Server) learnFailOpenHost(host string) {
+	h := normalizeHost(host)
+	if h == "" {
+		return
+	}
+	s.failOpenMu.Lock()
+	if s.failOpenHosts == nil {
+		s.failOpenHosts = map[string]struct{}{}
+	}
+	if _, ok := s.failOpenHosts[h]; !ok {
+		s.failOpenHosts[h] = struct{}{}
+		s.mitmFailOpenLearned.Add(1)
+	}
+	s.failOpenMu.Unlock()
+}
+
+func (s *Server) learnedBypassCount() int {
+	s.failOpenMu.RLock()
+	defer s.failOpenMu.RUnlock()
+	return len(s.failOpenHosts)
+}
+
+func shouldFailOpenMITMError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "unknown certificate") {
+		return true
+	}
+	if strings.Contains(msg, "bad certificate") {
+		return true
+	}
+	if strings.Contains(msg, "certificate required") {
+		return true
+	}
+	return false
 }
 
 func (s *Server) shouldRejectUDPHost(host string) bool {

@@ -45,8 +45,10 @@ type serveOptions struct {
 	UDPMaxSessions int
 	UDPIdleTimeout time.Duration
 
-	MITMHosts []string
-	MITMAll   bool
+	MITMHosts       []string
+	MITMAll         bool
+	MITMBypassHosts []string
+	MITMFailOpen    bool
 
 	ModuleSources []module.Source
 
@@ -125,20 +127,22 @@ func runServe(args []string) error {
 		scriptRules = append(scriptRules, parsedModule.Scripts...)
 		udpRules = append(udpRules, parsedModule.UDPRules...)
 	}
-	log.Printf("policy loaded: mitm_hosts=%d rewrite_rules=%d scripts=%d udp_rules=%d", len(hosts), len(rewriteRules), len(scriptRules), len(udpRules))
+	log.Printf("policy loaded: mitm_hosts=%d mitm_bypass_hosts=%d rewrite_rules=%d scripts=%d udp_rules=%d", len(hosts), len(opts.MITMBypassHosts), len(rewriteRules), len(scriptRules), len(udpRules))
 	log.Printf("udp config: max_sessions=%d idle_timeout=%s", opts.UDPMaxSessions, opts.UDPIdleTimeout)
 	log.Printf("capture config: enabled=%v max_entries=%d max_body_bytes=%d har_out=%q", opts.CaptureEnabled, opts.CaptureMaxEntries, opts.CaptureMaxBodyBytes, opts.HAROut)
 
 	srv := server.New(server.Config{
-		ListenAddr:     opts.Listen,
-		DialTimeout:    opts.DialTimeout,
-		UDPMaxSessions: opts.UDPMaxSessions,
-		UDPIdleTimeout: opts.UDPIdleTimeout,
-		MITMHosts:      hosts,
-		MITMAll:        opts.MITMAll,
-		Rewrite:        rewriteRules,
-		Scripts:        scriptRules,
-		UDPRules:       udpRules,
+		ListenAddr:      opts.Listen,
+		DialTimeout:     opts.DialTimeout,
+		UDPMaxSessions:  opts.UDPMaxSessions,
+		UDPIdleTimeout:  opts.UDPIdleTimeout,
+		MITMHosts:       hosts,
+		MITMAll:         opts.MITMAll,
+		MITMBypassHosts: opts.MITMBypassHosts,
+		MITMFailOpen:    opts.MITMFailOpen,
+		Rewrite:         rewriteRules,
+		Scripts:         scriptRules,
+		UDPRules:        udpRules,
 		Capture: capture.Config{
 			Enabled:      opts.CaptureEnabled,
 			MaxEntries:   opts.CaptureMaxEntries,
@@ -193,6 +197,8 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	caDir := fs.String("ca-dir", "", "CA storage directory")
 	mitmHosts := fs.String("mitm-hosts", "", "comma-separated MITM hosts, e.g. *.googlevideo.com,youtubei.googleapis.com")
 	mitmAll := fs.Bool("mitm-all", false, "MITM all HTTPS hosts on port 443")
+	mitmBypassHosts := fs.String("mitm-bypass-hosts", "", "comma-separated hosts to bypass MITM")
+	mitmFailOpen := fs.Bool("mitm-fail-open", false, "auto-bypass MITM host on client certificate trust errors")
 	moduleURLs := fs.String("module-urls", "", "comma-separated sgmodule URLs")
 	moduleFiles := fs.String("module-files", "", "comma-separated local sgmodule file paths")
 	moduleArgs := fs.String("module-args", "", "module argument overrides, e.g. key1=value1,key2=true")
@@ -240,6 +246,12 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	}
 	if visited["mitm-all"] {
 		opts.MITMAll = *mitmAll
+	}
+	if visited["mitm-bypass-hosts"] {
+		opts.MITMBypassHosts = splitCommaList(*mitmBypassHosts)
+	}
+	if visited["mitm-fail-open"] {
+		opts.MITMFailOpen = *mitmFailOpen
 	}
 	cliModuleArgs := map[string]string{}
 	if visited["module-args"] {
@@ -366,6 +378,8 @@ func applyConfigFile(opts *serveOptions, cfg *config.File) error {
 
 	opts.MITMHosts = append([]string{}, cfg.MITM.Hosts...)
 	opts.MITMAll = cfg.MITM.All
+	opts.MITMBypassHosts = append([]string{}, cfg.MITM.BypassHosts...)
+	opts.MITMFailOpen = cfg.MITM.FailOpen
 	opts.ModuleSources = nil
 	for _, m := range cfg.Modules {
 		enabled := true

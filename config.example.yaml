@@ -6,9 +6,12 @@ serve:
 
 mitm:
   all: false
+  fail_open: false
   hosts:
     - "*.googlevideo.com"
     - "youtubei.googleapis.com"
+  bypass_hosts:
+    - "api.apple-cloudkit.com"
 
 modules:
   - name: GoogleHomeFunDemo
