@@ -28,7 +28,7 @@ const (
 	RootKeyFile  = "root_ca.key"
 
 	rootCACommonNamePrefix = "GoMITM Root CA"
-	rootCertDateLayout     = "20060102"
+	rootCertNameTimeLayout = "20060102-150405"
 )
 
 type Manager struct {
@@ -149,19 +149,19 @@ func (m *Manager) RootCertPEM() []byte {
 }
 
 func (m *Manager) RootCertDownloadFilename() string {
-	return fmt.Sprintf("gomitm-root-ca-%s.crt", m.rootCertIssueDate())
+	return fmt.Sprintf("gomitm-root-ca-%s.crt", m.rootCertIssueTimestamp())
 }
 
-func (m *Manager) rootCertIssueDate() string {
+func (m *Manager) rootCertIssueTimestamp() string {
 	if m != nil {
-		if d := issuedDateFromCommonName(m.rootCommonName()); d != "" {
-			return d
+		if ts := issuedTimestampFromCommonName(m.rootCommonName()); ts != "" {
+			return ts
 		}
 		if m.rootCert != nil {
-			return m.rootCert.NotBefore.Format(rootCertDateLayout)
+			return m.rootCert.NotBefore.Format(rootCertNameTimeLayout)
 		}
 	}
-	return time.Now().Format(rootCertDateLayout)
+	return time.Now().Format(rootCertNameTimeLayout)
 }
 
 func (m *Manager) rootCommonName() string {
@@ -171,20 +171,20 @@ func (m *Manager) rootCommonName() string {
 	return strings.TrimSpace(m.rootCert.Subject.CommonName)
 }
 
-func issuedDateFromCommonName(commonName string) string {
+func issuedTimestampFromCommonName(commonName string) string {
 	prefix := rootCACommonNamePrefix + " "
 	if !strings.HasPrefix(commonName, prefix) {
 		return ""
 	}
-	date := strings.TrimPrefix(commonName, prefix)
-	if _, err := time.Parse(rootCertDateLayout, date); err != nil {
+	timestamp := strings.TrimPrefix(commonName, prefix)
+	if _, err := time.Parse(rootCertNameTimeLayout, timestamp); err != nil {
 		return ""
 	}
-	return date
+	return timestamp
 }
 
 func rootCACommonName(now time.Time) string {
-	return fmt.Sprintf("%s %s", rootCACommonNamePrefix, now.Format(rootCertDateLayout))
+	return fmt.Sprintf("%s %s", rootCACommonNamePrefix, now.Format(rootCertNameTimeLayout))
 }
 
 func (m *Manager) GetLeafCertificate(host string) (tls.Certificate, error) {

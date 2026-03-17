@@ -194,7 +194,7 @@ func TestHandleBuiltinCAPortal(t *testing.T) {
 		if !strings.Contains(out, "application/x-x509-ca-cert") {
 			t.Fatalf("unexpected content-type: %s", out)
 		}
-		if !regexp.MustCompile(`attachment; filename="gomitm-root-ca-\d{8}\.crt"`).MatchString(out) {
+		if !regexp.MustCompile(`attachment; filename="gomitm-root-ca-\d{8}-\d{6}\.crt"`).MatchString(out) {
 			t.Fatalf("unexpected content-disposition: %s", out)
 		}
 		if !strings.Contains(out, "BEGIN CERTIFICATE") {

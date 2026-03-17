@@ -97,7 +97,7 @@ func TestInitRootCACommonNameIncludesIssueDate(t *testing.T) {
 		t.Fatalf("common name should start with %q, got=%q", prefix, cn)
 	}
 	issuedDate := strings.TrimPrefix(cn, prefix)
-	if _, err := time.Parse(rootCertDateLayout, issuedDate); err != nil {
+	if _, err := time.Parse(rootCertNameTimeLayout, issuedDate); err != nil {
 		t.Fatalf("common name date format invalid, got=%q err=%v", issuedDate, err)
 	}
 }
@@ -109,7 +109,7 @@ func TestRootCertDownloadFilenameIncludesIssueDate(t *testing.T) {
 	}
 
 	name := m.RootCertDownloadFilename()
-	if !regexp.MustCompile(`^gomitm-root-ca-\d{8}\.crt$`).MatchString(name) {
+	if !regexp.MustCompile(`^gomitm-root-ca-\d{8}-\d{6}\.crt$`).MatchString(name) {
 		t.Fatalf("unexpected download filename: %q", name)
 	}
 
