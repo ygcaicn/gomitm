@@ -42,8 +42,9 @@ const (
 	repCmdNotSupported    = 0x07
 	repAddrTypeNotSupport = 0x08
 
-	builtinCAHost     = "www4.google.com"
-	builtinCACertPath = "/gomitm-ca.crt"
+	builtinCAHostHTTPS = "www4.google.com"
+	builtinCAHostHTTP  = "198.18.0.1"
+	builtinCACertPath  = "/gomitm-ca.crt"
 )
 
 type Config struct {
@@ -181,6 +182,17 @@ func (s *Server) handleConn(client net.Conn) {
 	}
 
 	target := net.JoinHostPort(host, strconv.Itoa(port))
+	if isBuiltinCAPortalHost(host) && port == 80 {
+		if err := writeReply(client, repSucceeded, nil, 0); err != nil {
+			s.logger.Printf("write socks reply failed: %v", err)
+			return
+		}
+		s.logger.Printf("builtin CA HTTP portal %s", target)
+		if err := s.handleBuiltinCAHTTPPortal(client, host); err != nil {
+			s.logger.Printf("builtin ca http portal failed for %s: %v", target, err)
+		}
+		return
+	}
 	useMITM := s.shouldMITM(host, port)
 
 	if useMITM {
@@ -220,11 +232,10 @@ func (s *Server) shouldMITM(host string, port int) bool {
 	if s.cfg.MITMAll {
 		return true
 	}
-	host = normalizeHost(host)
-	if host == builtinCAHost {
+	if isBuiltinCAPortalHost(host) {
 		return true
 	}
-	return s.matcher.Match(host)
+	return s.matcher.Match(normalizeHost(host))
 }
 
 func (s *Server) handleGreeting(conn net.Conn) error {
@@ -372,7 +383,7 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 		}
 		started := time.Now()
 
-		if handled, builtinResp, err := s.handleBuiltinCAPortal(req, writer); err != nil {
+		if handled, builtinResp, err := s.handleBuiltinCAPortal(req, writer, host); err != nil {
 			if req.Body != nil {
 				_ = req.Body.Close()
 			}
@@ -481,20 +492,50 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 	}
 }
 
-func (s *Server) handleBuiltinCAPortal(req *http.Request, writer *bufio.Writer) (bool, *http.Response, error) {
+func (s *Server) handleBuiltinCAHTTPPortal(rawConn net.Conn, host string) error {
+	reader := bufio.NewReader(rawConn)
+	writer := bufio.NewWriter(rawConn)
+
+	for {
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("read request: %w", err)
+		}
+		started := time.Now()
+
+		handled, resp, err := s.handleBuiltinCAPortal(req, writer, host)
+		if err != nil {
+			if req.Body != nil {
+				_ = req.Body.Close()
+			}
+			return err
+		}
+		if handled {
+			s.captureTransaction(req, resp, nil, started, "builtin-ca-portal-http", "")
+		}
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		if req.Close {
+			return nil
+		}
+	}
+}
+
+func (s *Server) handleBuiltinCAPortal(req *http.Request, writer *bufio.Writer, targetHost string) (bool, *http.Response, error) {
 	if req == nil || writer == nil || s.ca == nil {
 		return false, nil, nil
 	}
-	if normalizeHost(req.Host) != builtinCAHost {
+	if !isBuiltinCAPortalHost(targetHost) {
 		return false, nil, nil
 	}
 
 	path := "/"
 	if req.URL != nil && strings.TrimSpace(req.URL.Path) != "" {
 		path = req.URL.Path
-	}
-	if path != "/" && path != "/index.html" && path != builtinCACertPath {
-		return false, nil, nil
 	}
 
 	cert := s.ca.RootCertPEM()
@@ -517,6 +558,14 @@ func (s *Server) handleBuiltinCAPortal(req *http.Request, writer *bufio.Writer) 
 		resp.Header.Set("Content-Disposition", `attachment; filename="gomitm-root-ca.crt"`)
 		if err := writeHTTPResponse(writer, resp); err != nil {
 			return true, nil, fmt.Errorf("write built-in ca cert response: %w", err)
+		}
+		return true, resp, nil
+	}
+
+	if path != "/" && path != "/index.html" {
+		resp := newStaticResponse(req, http.StatusNotFound, "not found\n")
+		if err := writeHTTPResponse(writer, resp); err != nil {
+			return true, nil, fmt.Errorf("write built-in 404 response: %w", err)
 		}
 		return true, resp, nil
 	}
@@ -832,6 +881,11 @@ func normalizeHost(host string) string {
 		host = h
 	}
 	return strings.TrimSuffix(host, ".")
+}
+
+func isBuiltinCAPortalHost(host string) bool {
+	host = normalizeHost(host)
+	return host == builtinCAHostHTTPS || host == builtinCAHostHTTP
 }
 
 func removeHopByHopHeaders(h http.Header) {

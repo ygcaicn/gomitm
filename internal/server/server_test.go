@@ -127,6 +127,9 @@ func TestShouldMITMBuiltinHost(t *testing.T) {
 	if !s.shouldMITM("www4.google.com", 443) {
 		t.Fatal("builtin host should always be MITM on 443")
 	}
+	if !s.shouldMITM("198.18.0.1", 443) {
+		t.Fatal("builtin HTTP portal host should also be MITM on 443")
+	}
 	if s.shouldMITM("www4.google.com", 80) {
 		t.Fatal("builtin host on non-443 should not be MITM")
 	}
@@ -154,7 +157,7 @@ func TestHandleBuiltinCAPortal(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodGet, "https://www4.google.com/", nil)
 		buf := new(bytes.Buffer)
 		w := bufio.NewWriter(buf)
-		handled, resp, err := s.handleBuiltinCAPortal(req, w)
+		handled, resp, err := s.handleBuiltinCAPortal(req, w, "www4.google.com")
 		if err != nil {
 			t.Fatalf("handle root failed: %v", err)
 		}
@@ -177,7 +180,7 @@ func TestHandleBuiltinCAPortal(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodGet, "https://www4.google.com/gomitm-ca.crt", nil)
 		buf := new(bytes.Buffer)
 		w := bufio.NewWriter(buf)
-		handled, resp, err := s.handleBuiltinCAPortal(req, w)
+		handled, resp, err := s.handleBuiltinCAPortal(req, w, "www4.google.com")
 		if err != nil {
 			t.Fatalf("handle cert failed: %v", err)
 		}
@@ -200,12 +203,28 @@ func TestHandleBuiltinCAPortal(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodGet, "https://www.google.com/", nil)
 		buf := new(bytes.Buffer)
 		w := bufio.NewWriter(buf)
-		handled, _, err := s.handleBuiltinCAPortal(req, w)
+		handled, _, err := s.handleBuiltinCAPortal(req, w, "www.google.com")
 		if err != nil {
 			t.Fatalf("handle non builtin failed: %v", err)
 		}
 		if handled {
 			t.Fatal("non builtin host should not be handled")
+		}
+	}
+
+	{
+		req, _ := http.NewRequest(http.MethodGet, "http://198.18.0.1/unknown", nil)
+		buf := new(bytes.Buffer)
+		w := bufio.NewWriter(buf)
+		handled, resp, err := s.handleBuiltinCAPortal(req, w, "198.18.0.1")
+		if err != nil {
+			t.Fatalf("handle http unknown failed: %v", err)
+		}
+		if !handled || resp == nil {
+			t.Fatal("expected builtin host unknown path still handled with 404")
+		}
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status code got=%d", resp.StatusCode)
 		}
 	}
 }
