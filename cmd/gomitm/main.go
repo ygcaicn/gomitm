@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"gomitm/internal/admin"
 	"gomitm/internal/ca"
 	"gomitm/internal/capture"
 	"gomitm/internal/har"
@@ -59,6 +61,7 @@ func runServe(args []string) error {
 	captureMaxBodyBytes := fs.Int64("capture-max-body-bytes", 2*1024*1024, "max captured response body size in bytes")
 	captureTypes := fs.String("capture-content-types", "application/json,text/*", "comma-separated content-type filters")
 	harOut := fs.String("har-out", "", "export captured entries to HAR file on exit")
+	adminListen := fs.String("admin-listen", "", "admin HTTP listen address, e.g. 127.0.0.1:9090")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -108,6 +111,26 @@ func runServe(args []string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	var adminHTTP *http.Server
+	if strings.TrimSpace(*adminListen) != "" {
+		adminHTTP = &http.Server{
+			Addr:              *adminListen,
+			Handler:           admin.NewHandler(srv),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			log.Printf("admin API listening on %s", *adminListen)
+			if err := adminHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("admin API error: %v", err)
+			}
+		}()
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = adminHTTP.Shutdown(shutdownCtx)
+		}()
+	}
 
 	listenErr := srv.ListenAndServe(ctx)
 	if *captureEnabled && strings.TrimSpace(*harOut) != "" {

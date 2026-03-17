@@ -17,6 +17,7 @@
 - 支持 `[Script]` 子集（`type=http-request` / `type=http-response`）并执行 JS（goja）
 - 支持 `binary-body-mode=true` 的响应体字节数组改写（`bodyBytes`）
 - 支持 MITM 抓包并在退出时导出 HAR 文件
+- 支持 Admin API（健康检查、抓包列表、实时 HAR 导出）
 
 ## 快速使用
 
@@ -27,6 +28,7 @@ gomitm serve --listen :1080 --mitm-hosts "*.googlevideo.com,youtubei.googleapis.
 gomitm serve --listen :1080 --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
 gomitm serve --listen :1080 --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" --module-args "字幕翻译语言=ja,歌词翻译语言=ko,启用调试模式=true"
 gomitm serve --listen :1080 --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" --capture-enabled --har-out ./tmp/session.har
+gomitm serve --listen :1080 --admin-listen 127.0.0.1:19090 --capture-enabled
 ```
 
 将客户端代理设置为 SOCKS5 `127.0.0.1:1080`，并安装 `gomitm-ca.crt` 为受信任根证书。
@@ -60,6 +62,12 @@ go run ./cmd/gomitm serve --listen :1080 \
 go run ./cmd/gomitm serve --listen :1080 \
   --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" \
   --capture-enabled --har-out ./tmp/session.har
+
+# 开启 Admin API（运行中查看抓包）
+go run ./cmd/gomitm serve --listen :1080 --admin-listen 127.0.0.1:19090 --capture-enabled
+# GET /healthz
+# GET /api/captures?limit=100
+# GET /api/captures.har
 
 # 构建二进制
 go build -o ./gomitm ./cmd/gomitm
