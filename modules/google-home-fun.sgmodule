@@ -3,7 +3,7 @@
 #!arguments=文案:今天也要快乐摸鱼
 
 [Script]
-google.home.fun = type=http-response, pattern=^https:\/\/www\.google\.com\/(\?.*)?$, script-path=./google-home-fun.js, requires-body=true, max-size=2097152, argument="{\"message\":\"{{{文案}}}\"}"
+google.home.fun = type=http-response, pattern=^https:\/\/(www\.)?google\.com\/(webhp)?(\?.*)?$, script-path=./google-home-fun.js, requires-body=true, max-size=2097152, argument="{\"message\":\"{{{文案}}}\"}"
 
 [MITM]
-hostname = %APPEND% www.google.com
+hostname = %APPEND% www.google.com, google.com

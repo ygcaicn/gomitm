@@ -413,6 +413,10 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 			outReq.Host = req.Host
 		}
 		removeHopByHopHeaders(outReq.Header)
+		if shouldForceIdentityEncoding(req, s.scripts) {
+			outReq.Header.Del("Accept-Encoding")
+			outReq.Header.Set("Accept-Encoding", "identity")
+		}
 
 		resp, err := s.transport.RoundTrip(outReq)
 		if err != nil {
@@ -424,8 +428,12 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 			continue
 		}
 
-		if _, err := s.engine.ApplyResponseScripts(req, resp, s.scripts); err != nil {
+		appliedRespScript, err := s.engine.ApplyResponseScripts(req, resp, s.scripts)
+		if err != nil {
 			s.logger.Printf("script execution failed: %v", err)
+		}
+		if appliedRespScript {
+			resp.Header.Del("Content-Encoding")
 		}
 		s.captureTransaction(req, resp, started, "", "")
 
@@ -675,6 +683,25 @@ func shouldCaptureContentType(contentType string, filters []string) bool {
 			continue
 		}
 		if strings.HasPrefix(ct, f) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldForceIdentityEncoding(req *http.Request, rules []policy.ScriptRule) bool {
+	if req == nil || len(rules) == 0 {
+		return false
+	}
+	u := requestFullURL(req)
+	for _, rule := range rules {
+		if rule.Type != policy.ScriptTypeHTTPResponse {
+			continue
+		}
+		if !rule.RequiresBody {
+			continue
+		}
+		if rule.Match(u) {
 			return true
 		}
 	}

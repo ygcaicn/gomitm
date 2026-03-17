@@ -30,7 +30,7 @@ gomitm serve --listen :1080 --admin-listen 127.0.0.1:19090 --capture-enabled
 ```
 
 将客户端代理设置为 SOCKS5 `127.0.0.1:1080`，并安装 `gomitm-ca.crt` 为受信任根证书。
-`config.example.yaml` 默认启用了本地 demo 模块：访问 `https://www.google.com/` 首页会看到一个俏皮横幅（用于验证 MITM + 脚本生效）。
+`config.example.yaml` 默认启用了本地 demo 模块：访问 `https://www.google.com/` 或 `https://google.com/webhp` 会看到一个俏皮横幅（用于验证 MITM + 脚本生效）。
 代码内置了一个 CA 门户：访问 `https://www4.google.com/` 会返回证书安装页（不再透传 404），并可从 `https://www4.google.com/gomitm-ca.crt` 直接下载当前实例根证书。
 
 ## 开发启动（Dev）

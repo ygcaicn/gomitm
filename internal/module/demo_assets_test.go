@@ -25,7 +25,7 @@ func TestGoogleHomeDemoModuleCanLoad(t *testing.T) {
 		t.Fatalf("LoadSources failed: %v", err)
 	}
 
-	if len(parsed.MITMHosts) == 0 || parsed.MITMHosts[0] != "www.google.com" {
+	if len(parsed.MITMHosts) != 2 || parsed.MITMHosts[0] != "google.com" || parsed.MITMHosts[1] != "www.google.com" {
 		t.Fatalf("unexpected MITM hosts: %v", parsed.MITMHosts)
 	}
 	if len(parsed.Scripts) != 1 {
@@ -33,6 +33,9 @@ func TestGoogleHomeDemoModuleCanLoad(t *testing.T) {
 	}
 	if !parsed.Scripts[0].Match("https://www.google.com/") {
 		t.Fatal("google homepage pattern should match")
+	}
+	if !parsed.Scripts[0].Match("https://google.com/webhp?hl=zh-CN") {
+		t.Fatal("google /webhp pattern should match")
 	}
 	if parsed.Scripts[0].Argument != `{"message":"测试文案"}` {
 		t.Fatalf("unexpected script argument: %q", parsed.Scripts[0].Argument)

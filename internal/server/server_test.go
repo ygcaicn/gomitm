@@ -56,6 +56,26 @@ func TestShouldCaptureContentType(t *testing.T) {
 	}
 }
 
+func TestShouldForceIdentityEncoding(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "https://www.google.com/webhp?hl=zh-CN", nil)
+	rules := []policy.ScriptRule{
+		{
+			Name:         "google-home",
+			Type:         policy.ScriptTypeHTTPResponse,
+			Pattern:      regexp.MustCompile(`^https:\/\/(www\.)?google\.com\/(webhp)?(\?.*)?$`),
+			RequiresBody: true,
+		},
+	}
+	if !shouldForceIdentityEncoding(req, rules) {
+		t.Fatal("expected identity encoding when response-body script matches")
+	}
+
+	req2, _ := http.NewRequest(http.MethodGet, "https://example.com/api", nil)
+	if shouldForceIdentityEncoding(req2, rules) {
+		t.Fatal("unexpected identity encoding for non-matching url")
+	}
+}
+
 func TestShouldMITMBuiltinHost(t *testing.T) {
 	s := &Server{matcher: nil}
 	if !s.shouldMITM("www4.google.com", 443) {
