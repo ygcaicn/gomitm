@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -245,5 +246,59 @@ func TestHandleBuiltinCAPortal(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status code got=%d", resp.StatusCode)
 		}
+	}
+}
+
+func TestReadSocksRequestConnect(t *testing.T) {
+	s := &Server{}
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	go func() {
+		// VER=5 CMD=1 RSV=0 ATYP=3 DOMAIN=example.com PORT=443
+		_, _ = client.Write([]byte{
+			0x05, 0x01, 0x00, 0x03,
+			0x0b, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm',
+			0x01, 0xbb,
+		})
+	}()
+
+	cmd, host, port, err := s.readSocksRequest(server)
+	if err != nil {
+		t.Fatalf("read request failed: %v", err)
+	}
+	if cmd != cmdConnect {
+		t.Fatalf("cmd got=%d", cmd)
+	}
+	if host != "example.com" || port != 443 {
+		t.Fatalf("host/port got=%s:%d", host, port)
+	}
+}
+
+func TestReadSocksRequestUDPAssociate(t *testing.T) {
+	s := &Server{}
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	go func() {
+		// VER=5 CMD=3 RSV=0 ATYP=1 ADDR=0.0.0.0 PORT=0
+		_, _ = client.Write([]byte{
+			0x05, 0x03, 0x00, 0x01,
+			0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00,
+		})
+	}()
+
+	cmd, host, port, err := s.readSocksRequest(server)
+	if err != nil {
+		t.Fatalf("read request failed: %v", err)
+	}
+	if cmd != cmdUDPAssociate {
+		t.Fatalf("cmd got=%d", cmd)
+	}
+	if host != "0.0.0.0" || port != 0 {
+		t.Fatalf("host/port got=%s:%d", host, port)
 	}
 }

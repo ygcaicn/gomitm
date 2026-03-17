@@ -30,7 +30,8 @@ const (
 	authNoAcceptable = 0xFF
 	authNoAuth       = 0x00
 
-	cmdConnect = 0x01
+	cmdConnect      = 0x01
+	cmdUDPAssociate = 0x03
 
 	atypIPv4   = 0x01
 	atypDomain = 0x03
@@ -176,9 +177,16 @@ func (s *Server) handleConn(client net.Conn) {
 		return
 	}
 
-	host, port, err := s.readConnectRequest(client)
+	cmd, host, port, err := s.readSocksRequest(client)
 	if err != nil {
 		s.logger.Printf("socks request failed: %v", err)
+		return
+	}
+
+	if cmd == cmdUDPAssociate {
+		if err := s.handleUDPAssociate(client, host, port); err != nil {
+			s.logger.Printf("udp associate failed: %v", err)
+		}
 		return
 	}
 
@@ -269,17 +277,18 @@ func (s *Server) handleGreeting(conn net.Conn) error {
 	return nil
 }
 
-func (s *Server) readConnectRequest(conn net.Conn) (string, int, error) {
+func (s *Server) readSocksRequest(conn net.Conn) (byte, string, int, error) {
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(conn, header); err != nil {
-		return "", 0, err
+		return 0, "", 0, err
 	}
 	if header[0] != socksVersion5 {
-		return "", 0, fmt.Errorf("invalid request version: %d", header[0])
+		return 0, "", 0, fmt.Errorf("invalid request version: %d", header[0])
 	}
-	if header[1] != cmdConnect {
+	cmd := header[1]
+	if cmd != cmdConnect && cmd != cmdUDPAssociate {
 		_ = writeReply(conn, repCmdNotSupported, nil, 0)
-		return "", 0, fmt.Errorf("unsupported command: %d", header[1])
+		return 0, "", 0, fmt.Errorf("unsupported command: %d", cmd)
 	}
 
 	atyp := header[3]
@@ -288,15 +297,55 @@ func (s *Server) readConnectRequest(conn net.Conn) (string, int, error) {
 		if errors.Is(err, errAddrTypeNotSupported) {
 			_ = writeReply(conn, repAddrTypeNotSupport, nil, 0)
 		}
-		return "", 0, err
+		return 0, "", 0, err
 	}
 
 	portBytes := make([]byte, 2)
 	if _, err := io.ReadFull(conn, portBytes); err != nil {
-		return "", 0, err
+		return 0, "", 0, err
 	}
 	port := int(portBytes[0])<<8 | int(portBytes[1])
-	return host, port, nil
+	return cmd, host, port, nil
+}
+
+func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) error {
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		_ = writeReply(client, repGeneralFailure, nil, 0)
+		return fmt.Errorf("listen udp relay: %w", err)
+	}
+	defer udpConn.Close()
+
+	bindIP, bindPort := addrFrom(udpConn.LocalAddr())
+	if err := writeReply(client, repSucceeded, bindIP, bindPort); err != nil {
+		return fmt.Errorf("write udp associate reply: %w", err)
+	}
+	s.logger.Printf("UDP ASSOCIATE %s:%d relay=%s:%d (drop mode)", host, port, bindIP.String(), bindPort)
+
+	// Keep consuming UDP packets to ensure client keeps using this association,
+	// while intentionally not forwarding them.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 64*1024)
+		for {
+			if err := udpConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				return
+			}
+			if _, _, err := udpConn.ReadFromUDP(buf); err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					continue
+				}
+				return
+			}
+		}
+	}()
+
+	_ = client.SetReadDeadline(time.Now().Add(24 * time.Hour))
+	_, _ = io.Copy(io.Discard, client)
+	_ = udpConn.Close()
+	<-done
+	return nil
 }
 
 var errAddrTypeNotSupported = errors.New("address type not supported")
