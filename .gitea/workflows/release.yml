@@ -71,13 +71,15 @@ jobs:
             if [ "$GOOS" = "windows" ]; then
               ASSET="gomitm_${VERSION}_${GOOS}_${GOARCH}.zip"
               (cd dist && zip -rq "$ASSET" "gomitm_${VERSION}_${GOOS}_${GOARCH}")
-              unzip -l "dist/$ASSET" | grep -q "config.yaml"
-              unzip -l "dist/$ASSET" | grep -q "modules/google-home-fun.sgmodule"
+              ZIP_LIST="$(unzip -Z1 "dist/$ASSET")"
+              grep -qE "/config\\.yaml$" <<<"$ZIP_LIST"
+              grep -qE "/modules/google-home-fun\\.sgmodule$" <<<"$ZIP_LIST"
             else
               ASSET="gomitm_${VERSION}_${GOOS}_${GOARCH}.tar.gz"
               (cd dist && tar -czf "$ASSET" "gomitm_${VERSION}_${GOOS}_${GOARCH}")
-              tar -tzf "dist/$ASSET" | grep -q "/config.yaml$"
-              tar -tzf "dist/$ASSET" | grep -q "/modules/google-home-fun.sgmodule$"
+              TAR_LIST="$(tar -tzf "dist/$ASSET")"
+              grep -qE "/config\\.yaml$" <<<"$TAR_LIST"
+              grep -qE "/modules/google-home-fun\\.sgmodule$" <<<"$TAR_LIST"
             fi
 
             rm -rf "$OUTDIR"
