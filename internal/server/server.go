@@ -71,6 +71,13 @@ type Server struct {
 	ln        net.Listener
 }
 
+type responseSnapshot struct {
+	Status  int
+	Headers map[string]string
+	Body    string
+	ReadErr error
+}
+
 func New(cfg Config, caManager *ca.Manager, logger *log.Logger) *Server {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":1080"
@@ -371,7 +378,7 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 			}
 			return err
 		} else if handled {
-			s.captureTransaction(req, builtinResp, started, "builtin-ca-portal", "")
+			s.captureTransaction(req, builtinResp, nil, started, "builtin-ca-portal", "")
 			if req.Body != nil {
 				_ = req.Body.Close()
 			}
@@ -387,7 +394,7 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 			}
 			return err
 		} else if handled {
-			s.captureTransaction(req, rewriteResp, started, rewriteRule, "")
+			s.captureTransaction(req, rewriteResp, nil, started, rewriteRule, "")
 			if req.Body != nil {
 				_ = req.Body.Close()
 			}
@@ -425,11 +432,17 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 		resp, err := s.transport.RoundTrip(outReq)
 		if err != nil {
 			_ = writeHTTPError(writer, req, http.StatusBadGateway, err.Error())
-			s.captureTransaction(req, nil, started, "", err.Error())
+			s.captureTransaction(req, nil, nil, started, "", err.Error())
 			if req.Body != nil {
 				_ = req.Body.Close()
 			}
 			continue
+		}
+
+		var upstream *responseSnapshot
+		if s.capStore != nil {
+			snap := s.snapshotResponse(resp)
+			upstream = &snap
 		}
 
 		appliedRespScript, err := s.engine.ApplyResponseScripts(req, resp, s.scripts)
@@ -439,7 +452,7 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 		if appliedRespScript {
 			resp.Header.Del("Content-Encoding")
 		}
-		s.captureTransaction(req, resp, started, "", "")
+		s.captureTransaction(req, resp, upstream, started, "", "")
 
 		removeHopByHopHeaders(resp.Header)
 		if err := resp.Write(writer); err != nil {
@@ -591,7 +604,7 @@ func (s *Server) applyRewrite(req *http.Request, writer *bufio.Writer) (bool, *h
 	return false, nil, "", nil
 }
 
-func (s *Server) captureTransaction(req *http.Request, resp *http.Response, started time.Time, rule string, errMsg string) {
+func (s *Server) captureTransaction(req *http.Request, resp *http.Response, upstream *responseSnapshot, started time.Time, rule string, errMsg string) {
 	if s.capStore == nil || req == nil {
 		return
 	}
@@ -605,6 +618,14 @@ func (s *Server) captureTransaction(req *http.Request, resp *http.Response, star
 		Rule:       rule,
 		Error:      errMsg,
 	}
+	if upstream != nil {
+		entry.UpstreamRespStatus = upstream.Status
+		entry.UpstreamRespHeaders = cloneHeaderMap(upstream.Headers)
+		entry.UpstreamRespBody = upstream.Body
+		if upstream.ReadErr != nil && entry.Error == "" {
+			entry.Error = upstream.ReadErr.Error()
+		}
+	}
 
 	if resp != nil {
 		entry.RespStatus = resp.StatusCode
@@ -615,7 +636,26 @@ func (s *Server) captureTransaction(req *http.Request, resp *http.Response, star
 		}
 		entry.RespBody = body
 	}
+	if upstream != nil && resp != nil {
+		entry.RespModified = entry.UpstreamRespStatus != entry.RespStatus ||
+			entry.UpstreamRespBody != entry.RespBody ||
+			!sameHeaderMap(entry.UpstreamRespHeaders, entry.RespHeaders)
+	}
 	s.capStore.Add(entry)
+}
+
+func (s *Server) snapshotResponse(resp *http.Response) responseSnapshot {
+	if resp == nil {
+		return responseSnapshot{}
+	}
+	out := responseSnapshot{
+		Status:  resp.StatusCode,
+		Headers: headerToMap(resp.Header),
+	}
+	body, err := s.peekResponseBody(resp)
+	out.Body = body
+	out.ReadErr = err
+	return out
 }
 
 func (s *Server) peekResponseBody(resp *http.Response) (string, error) {
@@ -668,6 +708,29 @@ func headerToMap(h http.Header) map[string]string {
 		out[k] = strings.Join(v, ",")
 	}
 	return out
+}
+
+func cloneHeaderMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func sameHeaderMap(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		if bv, ok := b[k]; !ok || bv != av {
+			return false
+		}
+	}
+	return true
 }
 
 func shouldCaptureContentType(contentType string, filters []string) bool {

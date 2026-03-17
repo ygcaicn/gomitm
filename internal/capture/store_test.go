@@ -23,13 +23,25 @@ func TestStoreRingBuffer(t *testing.T) {
 
 func TestStoreSnapshotCopy(t *testing.T) {
 	s := NewStore(10)
-	s.Add(Entry{ID: "1", URL: "https://a", StartedAt: time.Now()})
+	s.Add(Entry{
+		ID: "1", URL: "https://a", StartedAt: time.Now(),
+		RespHeaders:         map[string]string{"x-final": "1"},
+		UpstreamRespHeaders: map[string]string{"x-upstream": "1"},
+	})
 
 	entries := s.Snapshot()
 	entries[0].URL = "mutated"
+	entries[0].RespHeaders["x-final"] = "mutated"
+	entries[0].UpstreamRespHeaders["x-upstream"] = "mutated"
 
 	again := s.Snapshot()
 	if again[0].URL != "https://a" {
 		t.Fatalf("store leaked mutation: %s", again[0].URL)
+	}
+	if again[0].RespHeaders["x-final"] != "1" {
+		t.Fatalf("store leaked final headers mutation: %+v", again[0].RespHeaders)
+	}
+	if again[0].UpstreamRespHeaders["x-upstream"] != "1" {
+		t.Fatalf("store leaked upstream headers mutation: %+v", again[0].UpstreamRespHeaders)
 	}
 }

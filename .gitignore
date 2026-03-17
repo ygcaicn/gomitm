@@ -28,3 +28,6 @@ go.work.sum
 # local build outputs
 /gomitm
 tmp/
+
+# macOS metadata
+.DS_Store

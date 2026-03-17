@@ -22,9 +22,14 @@ type Entry struct {
 	ReqHeaders map[string]string
 	ReqBody    string
 
-	RespStatus  int
-	RespHeaders map[string]string
-	RespBody    string
+	UpstreamRespStatus  int
+	UpstreamRespHeaders map[string]string
+	UpstreamRespBody    string
+
+	RespStatus   int
+	RespHeaders  map[string]string
+	RespBody     string
+	RespModified bool
 
 	Rule  string
 	Error string
@@ -82,6 +87,9 @@ func cloneEntry(e Entry) Entry {
 	}
 	if e.RespHeaders != nil {
 		out.RespHeaders = cloneMap(e.RespHeaders)
+	}
+	if e.UpstreamRespHeaders != nil {
+		out.UpstreamRespHeaders = cloneMap(e.UpstreamRespHeaders)
 	}
 	return out
 }

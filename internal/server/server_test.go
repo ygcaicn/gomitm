@@ -9,8 +9,10 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"gomitm/internal/ca"
+	"gomitm/internal/capture"
 	"gomitm/internal/policy"
 )
 
@@ -73,6 +75,50 @@ func TestShouldForceIdentityEncoding(t *testing.T) {
 	req2, _ := http.NewRequest(http.MethodGet, "https://example.com/api", nil)
 	if shouldForceIdentityEncoding(req2, rules) {
 		t.Fatal("unexpected identity encoding for non-matching url")
+	}
+}
+
+func TestCaptureTransactionStoresUpstreamAndModified(t *testing.T) {
+	s := &Server{
+		capCfg: capture.Config{
+			MaxBodyBytes: 4 * 1024,
+			ContentTypes: []string{"text/*"},
+		},
+		capStore: capture.NewStore(8),
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com/", nil)
+	req.Header.Set("Accept", "text/html")
+
+	resp := &http.Response{
+		StatusCode:    200,
+		Header:        make(http.Header),
+		Body:          io.NopCloser(strings.NewReader("<html>after</html>")),
+		ContentLength: int64(len("<html>after</html>")),
+		Request:       req,
+	}
+	resp.Header.Set("Content-Type", "text/html; charset=utf-8")
+
+	upstream := &responseSnapshot{
+		Status:  200,
+		Headers: map[string]string{"Content-Type": "text/html; charset=utf-8"},
+		Body:    "<html>before</html>",
+	}
+
+	s.captureTransaction(req, resp, upstream, time.Now(), "", "")
+	entries := s.CaptureEntries()
+	if len(entries) != 1 {
+		t.Fatalf("entries len=%d", len(entries))
+	}
+	e := entries[0]
+	if e.UpstreamRespBody != "<html>before</html>" {
+		t.Fatalf("unexpected upstream body: %q", e.UpstreamRespBody)
+	}
+	if e.RespBody != "<html>after</html>" {
+		t.Fatalf("unexpected final body: %q", e.RespBody)
+	}
+	if !e.RespModified {
+		t.Fatal("resp_modified should be true when upstream and final differ")
 	}
 }
 
