@@ -331,7 +331,7 @@ func applyConfigFile(opts *serveOptions, cfg *config.File) error {
 		opts.ModuleSources = append(opts.ModuleSources, module.Source{
 			Name:      m.Name,
 			Enabled:   enabled,
-			Path:      strings.TrimSpace(m.Path),
+			Path:      resolveConfigPath(opts.ConfigPath, strings.TrimSpace(m.Path)),
 			Arguments: stringifyArgs(m.Arguments),
 		})
 	}
@@ -384,6 +384,21 @@ func stringifyArgs(in map[string]any) map[string]string {
 		}
 	}
 	return out
+}
+
+func resolveConfigPath(configPath, v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	lower := strings.ToLower(v)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || filepath.IsAbs(v) {
+		return v
+	}
+	if strings.TrimSpace(configPath) == "" {
+		return v
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(configPath), v))
 }
 
 func runCA(args []string) error {

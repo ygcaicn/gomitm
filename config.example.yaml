@@ -10,8 +10,13 @@ mitm:
     - "youtubei.googleapis.com"
 
 modules:
-  - name: YouTubeNoAds
+  - name: GoogleHomeFunDemo
     enable: true
+    path: "./modules/google-home-fun.sgmodule"
+    arguments:
+      文案: "今天也要快乐摸鱼"
+  - name: YouTubeNoAds
+    enable: false
     path: "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
     arguments:
       字幕翻译语言: "off"

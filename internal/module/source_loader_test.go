@@ -59,3 +59,32 @@ demo = type=http-response, pattern=^https:\/\/a\.example\.com\/$, script-path=` 
 		t.Fatalf("script code got=%q", parsed.Scripts[0].Code)
 	}
 }
+
+func TestLoadFromFileResolvesRelativeScriptPath(t *testing.T) {
+	dir := t.TempDir()
+	scriptName := "local.js"
+	scriptPath := filepath.Join(dir, scriptName)
+	if err := os.WriteFile(scriptPath, []byte(`$done({ body: "ok" })`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	modulePath := filepath.Join(dir, "demo.sgmodule")
+	moduleContent := `
+[Script]
+demo = type=http-response, pattern=^https:\/\/www\.google\.com\/$, script-path=./` + scriptName + `, requires-body=true
+`
+	if err := os.WriteFile(modulePath, []byte(moduleContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	parsed, err := LoadFromFile(modulePath)
+	if err != nil {
+		t.Fatalf("LoadFromFile failed: %v", err)
+	}
+	if len(parsed.Scripts) != 1 {
+		t.Fatalf("scripts=%d", len(parsed.Scripts))
+	}
+	if parsed.Scripts[0].ScriptPath != scriptPath {
+		t.Fatalf("script-path got=%q want=%q", parsed.Scripts[0].ScriptPath, scriptPath)
+	}
+}

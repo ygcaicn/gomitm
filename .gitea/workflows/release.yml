@@ -64,10 +64,20 @@ jobs:
               go build -trimpath -ldflags "-s -w" \
               -o "$OUTDIR/${BIN}${EXT}" ./cmd/gomitm
 
+            # bundle default runtime config + local demo modules
+            cp config.example.yaml "$OUTDIR/config.yaml"
+            cp -R modules "$OUTDIR/"
+
             if [ "$GOOS" = "windows" ]; then
-              (cd dist && zip -rq "gomitm_${VERSION}_${GOOS}_${GOARCH}.zip" "gomitm_${VERSION}_${GOOS}_${GOARCH}")
+              ASSET="gomitm_${VERSION}_${GOOS}_${GOARCH}.zip"
+              (cd dist && zip -rq "$ASSET" "gomitm_${VERSION}_${GOOS}_${GOARCH}")
+              unzip -l "dist/$ASSET" | grep -q "config.yaml"
+              unzip -l "dist/$ASSET" | grep -q "modules/google-home-fun.sgmodule"
             else
-              (cd dist && tar -czf "gomitm_${VERSION}_${GOOS}_${GOARCH}.tar.gz" "gomitm_${VERSION}_${GOOS}_${GOARCH}")
+              ASSET="gomitm_${VERSION}_${GOOS}_${GOARCH}.tar.gz"
+              (cd dist && tar -czf "$ASSET" "gomitm_${VERSION}_${GOOS}_${GOARCH}")
+              tar -tzf "dist/$ASSET" | grep -q "/config.yaml$"
+              tar -tzf "dist/$ASSET" | grep -q "/modules/google-home-fun.sgmodule$"
             fi
 
             rm -rf "$OUTDIR"

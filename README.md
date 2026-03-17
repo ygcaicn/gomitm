@@ -30,6 +30,7 @@ gomitm serve --listen :1080 --admin-listen 127.0.0.1:19090 --capture-enabled
 ```
 
 将客户端代理设置为 SOCKS5 `127.0.0.1:1080`，并安装 `gomitm-ca.crt` 为受信任根证书。
+`config.example.yaml` 默认启用了本地 demo 模块：访问 `https://www.google.com/` 首页会看到一个俏皮横幅（用于验证 MITM + 脚本生效）。
 
 ## 开发启动（Dev）
 
@@ -81,17 +82,21 @@ go build -o ./gomitm ./cmd/gomitm
 
 ```yaml
 modules:
-  - name: YouTubeNoAds
+  - name: GoogleHomeFunDemo
     enable: true
-    path: "./modules/youtube.sgmodule" # 也支持 https:// URL
+    path: "./modules/google-home-fun.sgmodule" # 也支持 https:// URL
     arguments:
-      屏蔽上传按钮: true
-      屏蔽Shorts按钮: true
-      启用调试模式: false
-  - name: BilibiliClean
+      文案: "今天也要快乐摸鱼"
+  - name: YouTubeNoAds
     enable: false
-    path: "https://raw.githubusercontent.com/example/bili.sgmodule"
+    path: "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
 ```
+
+说明：
+
+- `modules[].path` 是本地路径时，会按 `config.yaml` 所在目录解析相对路径。
+- `.sgmodule` 内 `script-path` 是本地路径时，会按该 `.sgmodule` 文件所在目录解析相对路径。
+- 发布产物默认包含 `config.yaml` 和 `modules/` 目录，可直接解压即用。
 
 ## 压力测试
 

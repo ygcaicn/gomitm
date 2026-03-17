@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -125,6 +126,7 @@ func LoadFromFileWithArgs(path string, args map[string]string) (*Parsed, error) 
 	if err != nil {
 		return nil, fmt.Errorf("parse module file %s: %w", path, err)
 	}
+	resolveRelativeScriptPaths(p, filepath.Dir(path))
 	return p, nil
 }
 
@@ -520,4 +522,17 @@ func cloneArgs(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func resolveRelativeScriptPaths(p *Parsed, moduleDir string) {
+	if p == nil || len(p.Scripts) == 0 {
+		return
+	}
+	for i := range p.Scripts {
+		scriptPath := strings.TrimSpace(p.Scripts[i].ScriptPath)
+		if scriptPath == "" || isURL(scriptPath) || filepath.IsAbs(scriptPath) {
+			continue
+		}
+		p.Scripts[i].ScriptPath = filepath.Clean(filepath.Join(moduleDir, scriptPath))
+	}
 }

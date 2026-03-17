@@ -104,3 +104,34 @@ modules:
 		t.Fatalf("新增参数 got=%q", args["新增参数"])
 	}
 }
+
+func TestParseServeOptionsResolvesModulePathRelativeToConfig(t *testing.T) {
+	dir := t.TempDir()
+	modDir := filepath.Join(dir, "modules")
+	if err := os.MkdirAll(modDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	content := `
+modules:
+  - name: local
+    enable: true
+    path: "./modules/demo.sgmodule"
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts, err := parseServeOptions([]string{"--config", cfgPath})
+	if err != nil {
+		t.Fatalf("parseServeOptions failed: %v", err)
+	}
+	if len(opts.ModuleSources) != 1 {
+		t.Fatalf("module sources len got=%d", len(opts.ModuleSources))
+	}
+	want := filepath.Join(dir, "modules", "demo.sgmodule")
+	if opts.ModuleSources[0].Path != want {
+		t.Fatalf("module path got=%q want=%q", opts.ModuleSources[0].Path, want)
+	}
+}
