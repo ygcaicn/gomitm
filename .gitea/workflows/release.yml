@@ -121,16 +121,20 @@ jobs:
           fi
           API_URL="${SERVER_URL%/}/api/v1"
 
-          set +e
-          RELEASE_JSON=$(curl -fsS \
+          TMP_RELEASE_JSON="$(mktemp)"
+          HTTP_CODE="$(curl -sS \
             -H "Authorization: token ${TOKEN}" \
-            "${API_URL}/repos/${REPO}/releases/tags/${VERSION}")
-          GET_EXIT=$?
-          set -e
+            -o "${TMP_RELEASE_JSON}" \
+            -w "%{http_code}" \
+            "${API_URL}/repos/${REPO}/releases/tags/${VERSION}")"
 
-          if [ $GET_EXIT -ne 0 ] || [ -z "${RELEASE_JSON}" ]; then
+          if [ "${HTTP_CODE}" = "200" ]; then
+            RELEASE_JSON="$(cat "${TMP_RELEASE_JSON}")"
+          else
+            echo "release tag not found yet (status=${HTTP_CODE}), creating new release for ${VERSION}"
             CREATE_PAYLOAD=$(jq -n \
               --arg version "${VERSION}" \
+              --arg sha "${SHA}" \
               '{
                 tag_name: $version,
                 name: $version,
@@ -146,6 +150,7 @@ jobs:
               "${API_URL}/repos/${REPO}/releases" \
               -d "${CREATE_PAYLOAD}")
           fi
+          rm -f "${TMP_RELEASE_JSON}"
 
           RELEASE_ID=$(echo "${RELEASE_JSON}" | jq -r '.id')
           if [ -z "${RELEASE_ID}" ] || [ "${RELEASE_ID}" = "null" ]; then
