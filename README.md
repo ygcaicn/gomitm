@@ -67,10 +67,13 @@ go build -o ./gomitm ./cmd/gomitm
 
 ## CI / Release
 
-- CI 文件：`.gitea/workflows/ci.yml`
+- CI 文件：
+  - `.gitea/workflows/ci.yml`
+  - `.gitea/workflows/release.yml`
 - 触发规则：
   - `push main` / `pull_request main`：自动执行 `go test ./...`，并做一次构建冒烟检查
   - `push tag v*`：自动交叉编译（`linux/darwin/windows` 的 `amd64/arm64`）并发布到 Gitea Release
+  - 两个工作流都支持 `workflow_dispatch` 手动触发
 - 需要在仓库 Secrets 中配置：
   - `TOKEN`：具备仓库 release 写权限的 token（用于上传发布资产）
 
