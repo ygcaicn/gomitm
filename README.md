@@ -134,3 +134,4 @@ go test -race ./...
 - MITM 目前仅在域名命中且端口为 `443` 时触发。
 - 抓包当前仅覆盖 MITM 的 HTTP 事务，不含纯 TCP 透传流量。
 - 抓包记录包含最终响应；若命中模块响应处理，还会额外记录 `UpstreamResp*`（上游原始响应）与 `RespModified` 标记。
+- 新增本地实验模块 `YouTubeWebLite`（`modules/youtube-web-lite.sgmodule`），面向浏览器端 YouTube 的轻量去广告（默认关闭）。

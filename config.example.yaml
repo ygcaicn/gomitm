@@ -23,6 +23,11 @@ modules:
       字幕翻译语言: "off"
       歌词翻译语言: "off"
       启用调试模式: false
+  - name: YouTubeWebLite
+    enable: false
+    path: "./modules/youtube-web-lite.sgmodule"
+    arguments:
+      启用页面样式清理: true
 
 capture:
   enabled: true

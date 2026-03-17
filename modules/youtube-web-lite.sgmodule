@@ -1,0 +1,11 @@
+#!name=YouTubeWebLite
+#!desc=浏览器端 YouTube 轻量去广告（实验性）
+#!arguments=启用页面样式清理:true
+
+[Script]
+youtube.web.api = type=http-response, pattern=^https:\/\/((www|m)\.)?youtube\.com\/youtubei\/v1\/(player|next|browse|search|guide|get_watch)(\?.*)?$, script-path=./youtube-web-lite.js, requires-body=true, max-size=4194304, argument="{\"mode\":\"api\"}"
+youtube.web.api2 = type=http-response, pattern=^https:\/\/youtubei\.googleapis\.com\/youtubei\/v1\/(player|next|browse|search|guide|get_watch)(\?.*)?$, script-path=./youtube-web-lite.js, requires-body=true, max-size=4194304, argument="{\"mode\":\"api\"}"
+youtube.web.watch = type=http-response, pattern=^https:\/\/((www|m)\.)?youtube\.com\/watch(\?.*)?$, script-path=./youtube-web-lite.js, requires-body=true, max-size=4194304, argument="{\"mode\":\"watch\",\"styleCleanup\":{{{启用页面样式清理}}}}"
+
+[MITM]
+hostname = %APPEND% youtube.com, www.youtube.com, m.youtube.com, youtubei.googleapis.com
