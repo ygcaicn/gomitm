@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"gomitm/internal/policy"
 
@@ -17,6 +19,12 @@ import (
 )
 
 type Engine struct{}
+
+var (
+	compatStoreMu sync.RWMutex
+	compatStore   = map[string]string{}
+	compatClient  = &http.Client{Timeout: 15 * time.Second}
+)
 
 func NewEngine() *Engine {
 	return &Engine{}
@@ -96,6 +104,9 @@ func (e *Engine) ApplyResponseScripts(req *http.Request, resp *http.Response, ru
 
 func executeRequestScript(rule policy.ScriptRule, req *http.Request, body []byte) (bool, error) {
 	vm := goja.New()
+	if err := installSurgeCompat(vm); err != nil {
+		return false, err
+	}
 
 	reqHeaders := headersToJS(req.Header)
 	requestObj := map[string]any{
@@ -141,6 +152,7 @@ func executeRequestScript(rule policy.ScriptRule, req *http.Request, body []byte
 	if override == nil {
 		return true, nil
 	}
+	override = unwrapDoneOverride(override, "request")
 
 	if v, ok := override["url"]; ok {
 		newURL := strings.TrimSpace(fmt.Sprint(v))
@@ -173,7 +185,11 @@ func executeRequestScript(rule policy.ScriptRule, req *http.Request, body []byte
 		}
 	}
 	if v, ok := override["body"]; ok {
-		newBody = []byte(fmt.Sprint(v))
+		if b, ok := toBytes(v); ok {
+			newBody = b
+		} else {
+			newBody = []byte(fmt.Sprint(v))
+		}
 	}
 	if rule.RequiresBody {
 		req.Body = io.NopCloser(bytes.NewReader(newBody))
@@ -185,6 +201,9 @@ func executeRequestScript(rule policy.ScriptRule, req *http.Request, body []byte
 
 func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http.Response, body []byte) (*http.Response, bool, error) {
 	vm := goja.New()
+	if err := installSurgeCompat(vm); err != nil {
+		return nil, false, err
+	}
 
 	reqHeaders := headersToJS(req.Header)
 	respHeaders := headersToJS(resp.Header)
@@ -236,6 +255,7 @@ func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http
 	}
 
 	out := cloneResponse(resp)
+	override = unwrapDoneOverride(override, "response")
 
 	if override != nil {
 		if v, ok := override["status"]; ok {
@@ -253,7 +273,11 @@ func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http
 			}
 		}
 		if v, ok := override["body"]; ok {
-			body = []byte(fmt.Sprint(v))
+			if b, ok := toBytes(v); ok {
+				body = b
+			} else {
+				body = []byte(fmt.Sprint(v))
+			}
 		}
 	}
 
@@ -400,4 +424,180 @@ func applyHeadersOverride(dst http.Header, v any) {
 			dst.Set(k, vv)
 		}
 	}
+}
+
+func unwrapDoneOverride(override map[string]any, key string) map[string]any {
+	if override == nil || key == "" {
+		return override
+	}
+	raw, ok := override[key]
+	if !ok {
+		return override
+	}
+	switch v := raw.(type) {
+	case map[string]any:
+		return v
+	case map[string]string:
+		out := make(map[string]any, len(v))
+		for k, vv := range v {
+			out[k] = vv
+		}
+		return out
+	default:
+		return override
+	}
+}
+
+func installSurgeCompat(vm *goja.Runtime) error {
+	if vm == nil {
+		return nil
+	}
+	if err := vm.Set("console", map[string]any{
+		"log": func(args ...any) {},
+	}); err != nil {
+		return err
+	}
+	if err := vm.Set("$persistentStore", map[string]any{
+		"read": func(key any) string {
+			k := strings.TrimSpace(fmt.Sprint(key))
+			compatStoreMu.RLock()
+			defer compatStoreMu.RUnlock()
+			return compatStore[k]
+		},
+		"write": func(value any, key any) bool {
+			k := strings.TrimSpace(fmt.Sprint(key))
+			if k == "" {
+				return false
+			}
+			compatStoreMu.Lock()
+			compatStore[k] = fmt.Sprint(value)
+			compatStoreMu.Unlock()
+			return true
+		},
+	}); err != nil {
+		return err
+	}
+	if err := vm.Set("$notification", map[string]any{
+		"post": func(title, subtitle, body string, extras ...any) {},
+	}); err != nil {
+		return err
+	}
+	if err := vm.Set("$prefs", map[string]any{
+		"valueForKey": func(key any) string {
+			k := strings.TrimSpace(fmt.Sprint(key))
+			compatStoreMu.RLock()
+			defer compatStoreMu.RUnlock()
+			return compatStore[k]
+		},
+		"setValueForKey": func(value any, key any) bool {
+			k := strings.TrimSpace(fmt.Sprint(key))
+			if k == "" {
+				return false
+			}
+			compatStoreMu.Lock()
+			compatStore[k] = fmt.Sprint(value)
+			compatStoreMu.Unlock()
+			return true
+		},
+	}); err != nil {
+		return err
+	}
+	if err := vm.Set("$notify", func(title, subtitle, body string, extras ...any) {}); err != nil {
+		return err
+	}
+
+	httpClientObj := map[string]any{
+		"get":    makeSurgeHTTPClientMethod(vm, http.MethodGet),
+		"post":   makeSurgeHTTPClientMethod(vm, http.MethodPost),
+		"put":    makeSurgeHTTPClientMethod(vm, http.MethodPut),
+		"delete": makeSurgeHTTPClientMethod(vm, http.MethodDelete),
+	}
+	return vm.Set("$httpClient", httpClientObj)
+}
+
+func makeSurgeHTTPClientMethod(vm *goja.Runtime, method string) func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		if vm == nil || len(call.Arguments) < 2 {
+			return goja.Undefined()
+		}
+
+		cb, ok := goja.AssertFunction(call.Arguments[1])
+		if !ok {
+			return goja.Undefined()
+		}
+
+		urlStr, headers, body, parseErr := parseSurgeHTTPClientArgs(call.Arguments[0])
+		if parseErr != nil {
+			_, _ = cb(goja.Undefined(), vm.ToValue(parseErr.Error()))
+			return goja.Undefined()
+		}
+
+		req, err := http.NewRequest(method, urlStr, strings.NewReader(body))
+		if err != nil {
+			_, _ = cb(goja.Undefined(), vm.ToValue(err.Error()))
+			return goja.Undefined()
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+
+		resp, err := compatClient.Do(req)
+		if err != nil {
+			_, _ = cb(goja.Undefined(), vm.ToValue(err.Error()))
+			return goja.Undefined()
+		}
+		defer resp.Body.Close()
+
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			_, _ = cb(goja.Undefined(), vm.ToValue(err.Error()))
+			return goja.Undefined()
+		}
+		respObj := map[string]any{
+			"status":     resp.StatusCode,
+			"statusCode": resp.StatusCode,
+			"headers":    headersToJS(resp.Header),
+		}
+		_, _ = cb(goja.Undefined(), goja.Null(), vm.ToValue(respObj), vm.ToValue(string(data)))
+		return goja.Undefined()
+	}
+}
+
+func parseSurgeHTTPClientArgs(arg goja.Value) (urlStr string, headers map[string]string, body string, err error) {
+	headers = map[string]string{}
+	if arg == nil || goja.IsUndefined(arg) || goja.IsNull(arg) {
+		return "", headers, "", fmt.Errorf("http client options is empty")
+	}
+
+	exported := arg.Export()
+	switch v := exported.(type) {
+	case string:
+		return strings.TrimSpace(v), headers, "", nil
+	case map[string]any:
+		if u, ok := v["url"]; ok {
+			urlStr = strings.TrimSpace(fmt.Sprint(u))
+		}
+		if hRaw, ok := v["headers"]; ok {
+			if hm, ok := hRaw.(map[string]any); ok {
+				for hk, hv := range hm {
+					headers[hk] = fmt.Sprint(hv)
+				}
+			}
+			if hm, ok := hRaw.(map[string]string); ok {
+				for hk, hv := range hm {
+					headers[hk] = hv
+				}
+			}
+		}
+		if b, ok := v["body"]; ok {
+			body = fmt.Sprint(b)
+		}
+	default:
+		return "", headers, "", fmt.Errorf("unsupported http client options type: %T", exported)
+	}
+
+	if urlStr == "" {
+		return "", headers, "", fmt.Errorf("http client url is empty")
+	}
+	return urlStr, headers, body, nil
 }
