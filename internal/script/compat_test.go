@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -214,5 +215,87 @@ $httpClient.get(%q, function(err, resp, body) {
 	}
 	if got := resp.Header.Get("x-http-upstream"); got != "yes" {
 		t.Fatalf("x-http-upstream got=%q", got)
+	}
+}
+
+func TestSurgeCompatHTTPClientBinaryModeAndBodyBytes(t *testing.T) {
+	var postedBody []byte
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bin":
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write([]byte{0, 255, 65, 66})
+		case "/echo":
+			data, _ := io.ReadAll(r.Body)
+			postedBody = append([]byte(nil), data...)
+			_, _ = w.Write([]byte("ok"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	engine := NewEngine()
+	rule := policy.ScriptRule{
+		Name:         "compat-http-client-binary",
+		Type:         policy.ScriptTypeHTTPResponse,
+		Pattern:      regexp.MustCompile(`^https://example\.com/httpclient-bin$`),
+		RequiresBody: true,
+		Code: fmt.Sprintf(`
+$httpClient.post({url:%q, bodyBytes:new Uint8Array([7,8,9]), "binary-mode": true}, function(err, resp, data) {
+  if (err) {
+    $done({ headers: {"x-post-error": String(err)} });
+    return;
+  }
+  $httpClient.get({url:%q, "binary-mode": true}, function(err2, resp2, data2) {
+    if (err2) {
+      $done({ headers: {"x-get-error": String(err2)} });
+      return;
+    }
+    let u = new Uint8Array(data2);
+    $done({ headers: {
+      "x-bin-len": String(u.length),
+      "x-bin-1": String(u[1]),
+      "x-post-status": String(resp.statusCode || resp.status),
+      "x-get-status": String(resp2.statusCode || resp2.status)
+    }, bodyBytes: u });
+  });
+});
+`, ts.URL+"/echo", ts.URL+"/bin"),
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com/httpclient-bin", nil)
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewBufferString("ok")),
+		Request:    req,
+	}
+
+	ok, err := engine.ApplyResponseScripts(req, resp, []policy.ScriptRule{rule})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected script to run")
+	}
+	if got := resp.Header.Get("x-post-status"); got != "200" {
+		t.Fatalf("x-post-status got=%q", got)
+	}
+	if got := resp.Header.Get("x-get-status"); got != "200" {
+		t.Fatalf("x-get-status got=%q", got)
+	}
+	if got := resp.Header.Get("x-bin-len"); got != "4" {
+		t.Fatalf("x-bin-len got=%q", got)
+	}
+	if got := resp.Header.Get("x-bin-1"); got != strconv.Itoa(255) {
+		t.Fatalf("x-bin-1 got=%q", got)
+	}
+	if !bytes.Equal(postedBody, []byte{7, 8, 9}) {
+		t.Fatalf("posted body got=%v", postedBody)
+	}
+	finalBody, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(finalBody, []byte{0, 255, 65, 66}) {
+		t.Fatalf("final body got=%v", finalBody)
 	}
 }

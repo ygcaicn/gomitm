@@ -526,18 +526,22 @@ func makeSurgeHTTPClientMethod(vm *goja.Runtime, method string) func(goja.Functi
 			return goja.Undefined()
 		}
 
-		urlStr, headers, body, parseErr := parseSurgeHTTPClientArgs(call.Arguments[0])
+		opts, parseErr := parseSurgeHTTPClientArgs(call.Arguments[0])
 		if parseErr != nil {
 			_, _ = cb(goja.Undefined(), vm.ToValue(parseErr.Error()))
 			return goja.Undefined()
 		}
 
-		req, err := http.NewRequest(method, urlStr, strings.NewReader(body))
+		var bodyReader io.Reader
+		if len(opts.Body) > 0 {
+			bodyReader = bytes.NewReader(opts.Body)
+		}
+		req, err := http.NewRequest(method, opts.URL, bodyReader)
 		if err != nil {
 			_, _ = cb(goja.Undefined(), vm.ToValue(err.Error()))
 			return goja.Undefined()
 		}
-		for k, v := range headers {
+		for k, v := range opts.Headers {
 			req.Header.Set(k, v)
 		}
 
@@ -558,46 +562,93 @@ func makeSurgeHTTPClientMethod(vm *goja.Runtime, method string) func(goja.Functi
 			"statusCode": resp.StatusCode,
 			"headers":    headersToJS(resp.Header),
 		}
-		_, _ = cb(goja.Undefined(), goja.Null(), vm.ToValue(respObj), vm.ToValue(string(data)))
+		dataVal := vm.ToValue(string(data))
+		if opts.BinaryMode {
+			dataVal = vm.ToValue(vm.NewArrayBuffer(data))
+		}
+		_, _ = cb(goja.Undefined(), goja.Null(), vm.ToValue(respObj), dataVal)
 		return goja.Undefined()
 	}
 }
 
-func parseSurgeHTTPClientArgs(arg goja.Value) (urlStr string, headers map[string]string, body string, err error) {
-	headers = map[string]string{}
+type surgeHTTPClientOptions struct {
+	URL        string
+	Headers    map[string]string
+	Body       []byte
+	BinaryMode bool
+}
+
+func parseSurgeHTTPClientArgs(arg goja.Value) (surgeHTTPClientOptions, error) {
+	opts := surgeHTTPClientOptions{
+		Headers: map[string]string{},
+	}
 	if arg == nil || goja.IsUndefined(arg) || goja.IsNull(arg) {
-		return "", headers, "", fmt.Errorf("http client options is empty")
+		return opts, fmt.Errorf("http client options is empty")
 	}
 
 	exported := arg.Export()
 	switch v := exported.(type) {
 	case string:
-		return strings.TrimSpace(v), headers, "", nil
+		opts.URL = strings.TrimSpace(v)
+		return opts, nil
 	case map[string]any:
 		if u, ok := v["url"]; ok {
-			urlStr = strings.TrimSpace(fmt.Sprint(u))
+			opts.URL = strings.TrimSpace(fmt.Sprint(u))
 		}
 		if hRaw, ok := v["headers"]; ok {
 			if hm, ok := hRaw.(map[string]any); ok {
 				for hk, hv := range hm {
-					headers[hk] = fmt.Sprint(hv)
+					opts.Headers[hk] = fmt.Sprint(hv)
 				}
 			}
 			if hm, ok := hRaw.(map[string]string); ok {
 				for hk, hv := range hm {
-					headers[hk] = hv
+					opts.Headers[hk] = hv
 				}
 			}
 		}
 		if b, ok := v["body"]; ok {
-			body = fmt.Sprint(b)
+			if data, ok := toBytes(b); ok {
+				opts.Body = data
+			} else {
+				opts.Body = []byte(fmt.Sprint(b))
+			}
+		}
+		if b, ok := v["bodyBytes"]; ok {
+			if data, ok := toBytes(b); ok {
+				opts.Body = data
+			}
+		}
+		if bm, ok := v["binary-mode"]; ok {
+			opts.BinaryMode = toBool(bm)
+		}
+		if bm, ok := v["binaryMode"]; ok {
+			opts.BinaryMode = toBool(bm)
 		}
 	default:
-		return "", headers, "", fmt.Errorf("unsupported http client options type: %T", exported)
+		return opts, fmt.Errorf("unsupported http client options type: %T", exported)
 	}
 
-	if urlStr == "" {
-		return "", headers, "", fmt.Errorf("http client url is empty")
+	if opts.URL == "" {
+		return opts, fmt.Errorf("http client url is empty")
 	}
-	return urlStr, headers, body, nil
+	return opts, nil
+}
+
+func toBool(v any) bool {
+	switch vv := v.(type) {
+	case bool:
+		return vv
+	case string:
+		vv = strings.TrimSpace(strings.ToLower(vv))
+		return vv == "1" || vv == "true" || vv == "yes" || vv == "on"
+	case int:
+		return vv != 0
+	case int64:
+		return vv != 0
+	case float64:
+		return vv != 0
+	default:
+		return false
+	}
 }
