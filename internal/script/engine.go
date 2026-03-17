@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -318,7 +319,22 @@ func fullURL(req *http.Request) string {
 	if host == "" {
 		host = req.URL.Host
 	}
+	host = normalizeHTTPSHost(host)
 	return "https://" + host + req.URL.RequestURI()
+}
+
+func normalizeHTTPSHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		if p == "443" {
+			return h
+		}
+		return net.JoinHostPort(h, p)
+	}
+	return host
 }
 
 func cloneResponse(resp *http.Response) *http.Response {

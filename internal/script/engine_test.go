@@ -158,3 +158,36 @@ $done({ url: "https://example.com/newpath", headers: h, method: "POST" });
 		t.Fatalf("header x-req got=%q", req.Header.Get("x-req"))
 	}
 }
+
+func TestApplyResponseScriptMatchesWhenHostContainsDefaultHTTPSPort(t *testing.T) {
+	engine := NewEngine()
+	rule := policy.ScriptRule{
+		Name:         "port-normalize",
+		Type:         policy.ScriptTypeHTTPResponse,
+		Pattern:      regexp.MustCompile(`^https://www\.google\.com/$`),
+		RequiresBody: true,
+		Code:         `$done({ body: "patched" });`,
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, "https://www.google.com/", nil)
+	req.Host = "www.google.com:443"
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("origin")),
+		Request:    req,
+	}
+
+	ok, err := engine.ApplyResponseScripts(req, resp, []policy.ScriptRule{rule})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected script to run with host containing :443")
+	}
+	buf := new(bytes.Buffer)
+	_, _ = buf.ReadFrom(resp.Body)
+	if got := buf.String(); got != "patched" {
+		t.Fatalf("body got=%q", got)
+	}
+}

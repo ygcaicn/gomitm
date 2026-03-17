@@ -34,6 +34,9 @@ func TestGoogleHomeDemoModuleCanLoad(t *testing.T) {
 	if !parsed.Scripts[0].Match("https://www.google.com/") {
 		t.Fatal("google homepage pattern should match")
 	}
+	if !parsed.Scripts[0].Match("https://www.google.com:443/") {
+		t.Fatal("google homepage with :443 should match")
+	}
 	if !parsed.Scripts[0].Match("https://google.com/webhp?hl=zh-CN") {
 		t.Fatal("google /webhp pattern should match")
 	}
