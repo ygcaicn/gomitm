@@ -84,6 +84,19 @@ go build -o ./gomitm ./cmd/gomitm
 
 - [config.example.yaml](/Users/caiyagang/Downloads/gomitm/config.example.yaml)
 
+## 压力测试
+
+```bash
+# 全量单测
+go test ./...
+
+# 基准测试（含内存分配）
+go test -run '^$' -bench . -benchmem ./internal/capture ./internal/module ./internal/script ./internal/server
+
+# 并发数据竞争检查
+go test -race ./...
+```
+
 ## CI / Release
 
 - CI 文件：

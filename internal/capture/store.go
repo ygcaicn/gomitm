@@ -34,13 +34,18 @@ type Store struct {
 	mu      sync.RWMutex
 	maxSize int
 	entries []Entry
+	start   int
+	size    int
 }
 
 func NewStore(maxSize int) *Store {
 	if maxSize <= 0 {
 		maxSize = 1000
 	}
-	return &Store{maxSize: maxSize, entries: make([]Entry, 0, maxSize)}
+	return &Store{
+		maxSize: maxSize,
+		entries: make([]Entry, maxSize),
+	}
 }
 
 func (s *Store) Add(e Entry) {
@@ -48,21 +53,24 @@ func (s *Store) Add(e Entry) {
 	defer s.mu.Unlock()
 
 	e = cloneEntry(e)
-	if len(s.entries) < s.maxSize {
-		s.entries = append(s.entries, e)
+	if s.size < s.maxSize {
+		idx := (s.start + s.size) % s.maxSize
+		s.entries[idx] = e
+		s.size++
 		return
 	}
-	copy(s.entries[0:], s.entries[1:])
-	s.entries[len(s.entries)-1] = e
+	s.entries[s.start] = e
+	s.start = (s.start + 1) % s.maxSize
 }
 
 func (s *Store) Snapshot() []Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	out := make([]Entry, len(s.entries))
-	for i := range s.entries {
-		out[i] = cloneEntry(s.entries[i])
+	out := make([]Entry, s.size)
+	for i := 0; i < s.size; i++ {
+		idx := (s.start + i) % s.maxSize
+		out[i] = cloneEntry(s.entries[idx])
 	}
 	return out
 }

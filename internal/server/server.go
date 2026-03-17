@@ -52,17 +52,18 @@ type Config struct {
 }
 
 type Server struct {
-	cfg      Config
-	ca       *ca.Manager
-	matcher  *domain.Matcher
-	rewrite  []policy.RewriteRule
-	scripts  []policy.ScriptRule
-	engine   *script.Engine
-	capCfg   capture.Config
-	capStore *capture.Store
-	seq      atomic.Uint64
-	logger   *log.Logger
-	ln       net.Listener
+	cfg       Config
+	ca        *ca.Manager
+	matcher   *domain.Matcher
+	rewrite   []policy.RewriteRule
+	scripts   []policy.ScriptRule
+	engine    *script.Engine
+	transport *http.Transport
+	capCfg    capture.Config
+	capStore  *capture.Store
+	seq       atomic.Uint64
+	logger    *log.Logger
+	ln        net.Listener
 }
 
 func New(cfg Config, caManager *ca.Manager, logger *log.Logger) *Server {
@@ -86,17 +87,28 @@ func New(cfg Config, caManager *ca.Manager, logger *log.Logger) *Server {
 	if cfg.Capture.Enabled {
 		capStore = capture.NewStore(cfg.Capture.MaxEntries)
 	}
+	transport := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           (&net.Dialer{Timeout: cfg.DialTimeout, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     false,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		MaxIdleConns:          256,
+		MaxIdleConnsPerHost:   32,
+	}
 
 	return &Server{
-		cfg:      cfg,
-		ca:       caManager,
-		matcher:  domain.NewMatcher(cfg.MITMHosts),
-		rewrite:  cfg.Rewrite,
-		scripts:  cfg.Scripts,
-		engine:   script.NewEngine(),
-		capCfg:   cfg.Capture,
-		capStore: capStore,
-		logger:   logger,
+		cfg:       cfg,
+		ca:        caManager,
+		matcher:   domain.NewMatcher(cfg.MITMHosts),
+		rewrite:   cfg.Rewrite,
+		scripts:   cfg.Scripts,
+		engine:    script.NewEngine(),
+		transport: transport,
+		capCfg:    cfg.Capture,
+		capStore:  capStore,
+		logger:    logger,
 	}
 }
 
@@ -119,6 +131,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
+		if s.transport != nil {
+			s.transport.CloseIdleConnections()
+		}
 	}()
 
 	go func() {
@@ -321,18 +336,6 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 	reader := bufio.NewReader(clientTLS)
 	writer := bufio.NewWriter(clientTLS)
 
-	transport := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           (&net.Dialer{Timeout: s.cfg.DialTimeout, KeepAlive: 30 * time.Second}).DialContext,
-		ForceAttemptHTTP2:     false,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		MaxIdleConns:          256,
-		MaxIdleConnsPerHost:   32,
-	}
-	defer transport.CloseIdleConnections()
-
 	for {
 		req, err := http.ReadRequest(reader)
 		if err != nil {
@@ -380,7 +383,7 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 		}
 		removeHopByHopHeaders(outReq.Header)
 
-		resp, err := transport.RoundTrip(outReq)
+		resp, err := s.transport.RoundTrip(outReq)
 		if err != nil {
 			_ = writeHTTPError(writer, req, http.StatusBadGateway, err.Error())
 			s.captureTransaction(req, nil, started, "", err.Error())
