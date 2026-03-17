@@ -109,14 +109,18 @@ func executeRequestScript(rule policy.ScriptRule, req *http.Request, body []byte
 	}
 
 	reqHeaders := headersToJS(req.Header)
+	reqBody, err := jsBodyValue(vm, body, rule.BinaryBodyMode)
+	if err != nil {
+		return false, err
+	}
 	requestObj := map[string]any{
 		"url":     fullURL(req),
 		"method":  req.Method,
 		"headers": reqHeaders,
-		"body":    string(body),
+		"body":    reqBody,
 	}
 	if rule.BinaryBodyMode {
-		requestObj["bodyBytes"] = append([]byte(nil), body...)
+		requestObj["bodyBytes"] = reqBody
 	}
 
 	if err := vm.Set("$request", requestObj); err != nil {
@@ -207,14 +211,18 @@ func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http
 
 	reqHeaders := headersToJS(req.Header)
 	respHeaders := headersToJS(resp.Header)
+	respBody, err := jsBodyValue(vm, body, rule.BinaryBodyMode)
+	if err != nil {
+		return nil, false, err
+	}
 
 	responseObj := map[string]any{
 		"status":  resp.StatusCode,
 		"headers": respHeaders,
-		"body":    string(body),
+		"body":    respBody,
 	}
 	if rule.BinaryBodyMode {
-		responseObj["bodyBytes"] = append([]byte(nil), body...)
+		responseObj["bodyBytes"] = respBody
 	}
 
 	if err := vm.Set("$request", map[string]any{
@@ -651,4 +659,31 @@ func toBool(v any) bool {
 	default:
 		return false
 	}
+}
+
+func jsBodyValue(vm *goja.Runtime, body []byte, binary bool) (any, error) {
+	if !binary {
+		return string(body), nil
+	}
+	u8, err := newUint8Array(vm, body)
+	if err != nil {
+		return nil, err
+	}
+	return u8, nil
+}
+
+func newUint8Array(vm *goja.Runtime, body []byte) (goja.Value, error) {
+	if vm == nil {
+		return nil, fmt.Errorf("nil vm")
+	}
+	key := "__gomitm_body_ab"
+	if err := vm.Set(key, vm.NewArrayBuffer(append([]byte(nil), body...))); err != nil {
+		return nil, err
+	}
+	v, err := vm.RunString("new Uint8Array(" + key + ")")
+	_ = vm.Set(key, goja.Undefined())
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
 }

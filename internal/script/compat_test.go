@@ -299,3 +299,46 @@ $httpClient.post({url:%q, bodyBytes:new Uint8Array([7,8,9]), "binary-mode": true
 		t.Fatalf("final body got=%v", finalBody)
 	}
 }
+
+func TestBinaryBodyModeExposesSurgeBodyAsUint8Array(t *testing.T) {
+	engine := NewEngine()
+	rule := policy.ScriptRule{
+		Name:           "surge-body-uint8array",
+		Type:           policy.ScriptTypeHTTPResponse,
+		Pattern:        regexp.MustCompile(`^https://example\.com/surge-u8$`),
+		RequiresBody:   true,
+		BinaryBodyMode: true,
+		Code: `
+const raw = $response.body;
+if (!(raw instanceof Uint8Array)) {
+  $done({ headers: {"x-body-type": Object.prototype.toString.call(raw)} });
+} else {
+  raw[0] = 90; // 'Z'
+  $done({ body: raw, headers: {"x-body-type":"uint8"} });
+}
+`,
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com/surge-u8", nil)
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("abc")),
+		Request:    req,
+	}
+
+	ok, err := engine.ApplyResponseScripts(req, resp, []policy.ScriptRule{rule})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected script to run")
+	}
+	if got := resp.Header.Get("x-body-type"); got != "uint8" {
+		t.Fatalf("x-body-type got=%q", got)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if got := string(body); got != "Zbc" {
+		t.Fatalf("body got=%q", got)
+	}
+}
