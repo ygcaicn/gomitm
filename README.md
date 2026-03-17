@@ -1,90 +1,93 @@
 # gomitm
 
-开发规范：
+`gomitm` 是一个面向类 Unix 系统的高性能 SOCKS5 MITM 代理，目标是把“路由能力 + HTTPS 解密 + 模块化脚本处理 + 抓包导出”整合到一个可扩展的 Go 工具里。
 
-- [GoMITM 开发规范（v1）](./docs/ARCHITECTURE.zh-CN.md)
+项目现阶段聚焦：
 
-## 当前能力（M1 + M2）
+1. 稳定的 SOCKS5 入站与 HTTPS MITM 主链路
+2. Surge-like 模块子集兼容（规则/脚本）
+3. 面向调试与分析的抓包能力（含 HAR 导出）
+
+开发规范见 [docs/ARCHITECTURE.zh-CN.md](./docs/ARCHITECTURE.zh-CN.md)。
+
+## Features
 
 - SOCKS5 入口（`NO AUTH` + `CONNECT`）
-- 非命中域名走 TCP 透传
-- 命中域名（`--mitm-hosts`）走 HTTPS MITM（HTTP/1.1）
-- 支持 `--mitm-all` / `mitm.all: true` 对全部 `443` 主机启用 MITM
-- 首次启动自动生成 Root CA
-- 支持导出 CA 证书供客户端安装
-- 支持加载 Surge-like 模块子集：
+- MITM 策略：
+  - 按域名列表（`mitm.hosts` / `--mitm-hosts`）
+  - 全量 443（`mitm.all` / `--mitm-all`）
+  - 内置 `www4.google.com` 证书门户始终可 MITM
+- HTTPS MITM（HTTP/1.1）+ 动态证书签发
+- CA 管理：
+  - 首次启动自动生成 Root CA
+  - 命令行导出证书
+  - 内置证书下载页面
+- 模块引擎（Surge-like 子集）：
   - `[MITM] hostname`
-  - `[URL Rewrite] ... - reject/reject-200`
-- 支持 `[Script]` 子集（`type=http-request` / `type=http-response`）并执行 JS（goja）
-- 支持 `binary-body-mode=true` 的响应体字节数组改写（`bodyBytes`）
-- 支持 MITM 抓包并在退出时导出 HAR 文件
-- 支持 Admin API（健康检查、抓包列表、实时 HAR 导出）
+  - `[URL Rewrite] ... - reject / reject-200`
+  - `[Script]`（`http-request` / `http-response`）
+  - `binary-body-mode=true`（`bodyBytes`）
+- 抓包能力：
+  - Admin API 实时查看
+  - 导出 HAR
+  - 同时记录上游原始响应与最终响应（含 `RespModified`）
+- 发布产物包含默认 `config.yaml` 与本地 `modules/`
 
-## 快速使用
+## Quick Start
 
-```bash
-gomitm ca init --ca-dir ~/.gomitm/ca
-gomitm ca export --ca-dir ~/.gomitm/ca --out ./gomitm-ca.crt
-gomitm serve --config ./config.example.yaml
-gomitm serve --listen :1080 --mitm-hosts "*.googlevideo.com,youtubei.googleapis.com"
-gomitm serve --listen :1080 --mitm-all
-gomitm serve --listen :1080 --admin-listen 127.0.0.1:19090 --capture-enabled
-```
-
-将客户端代理设置为 SOCKS5 `127.0.0.1:1080`，并安装 `gomitm-ca.crt` 为受信任根证书。
-`config.example.yaml` 默认启用了本地 demo 模块：访问 `https://www.google.com/` 或 `https://google.com/webhp` 会看到一个俏皮横幅（用于验证 MITM + 脚本生效）。
-代码内置了一个 CA 门户：访问 `https://www4.google.com/` 会返回证书安装页（不再透传 404），并可从 `https://www4.google.com/gomitm-ca.crt` 直接下载当前实例根证书。
-
-## 开发启动（Dev）
+### 1) 构建
 
 ```bash
-# 1) 拉依赖
-go mod tidy
-
-# 2) 运行测试
-go test ./...
-
-# 3) 直接开发态启动（无需先 build）
-go run ./cmd/gomitm serve --listen :1080
-```
-
-常用开发命令：
-
-```bash
-# 开启抓包并在退出时导出 HAR
-go run ./cmd/gomitm serve --listen :1080 \
-  --config ./config.example.yaml \
-  --capture-enabled --har-out ./tmp/session.har
-
-# 开启 Admin API（运行中查看抓包）
-go run ./cmd/gomitm serve --listen :1080 --admin-listen 127.0.0.1:19090 --capture-enabled
-# GET /healthz
-# GET /api/captures?limit=100
-# GET /api/captures.har
-
-# 通过配置文件启动
-go run ./cmd/gomitm serve --config ./config.example.yaml
-
-# 配置文件 + 命令行覆盖（命令行优先）
-go run ./cmd/gomitm serve --config ./config.example.yaml --listen :2080 --capture-enabled=false
-
-# 全量 MITM（仅限 443）
-go run ./cmd/gomitm serve --listen :1080 --mitm-all
-
-# 仅临时追加远程模块（用于快速调试，配置文件仍然是主入口）
-go run ./cmd/gomitm serve --config ./config.example.yaml \
-  --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" \
-  --module-args "字幕翻译语言=ja,歌词翻译语言=ko,启用调试模式=true"
-
-# 构建二进制
 go build -o ./gomitm ./cmd/gomitm
 ```
 
-配置文件参考：
+### 2) 初始化并导出 CA
 
-- [config.example.yaml](/Users/caiyagang/Downloads/gomitm/config.example.yaml)
+```bash
+./gomitm ca init --ca-dir ~/.gomitm/ca
+./gomitm ca export --ca-dir ~/.gomitm/ca --out ./gomitm-ca.crt
+```
 
-模块挂载模型（当前推荐）：
+### 3) 启动服务
+
+```bash
+./gomitm serve --config ./config.example.yaml
+```
+
+### 4) 配置客户端代理
+
+- SOCKS5: `127.0.0.1:1080`
+- 在系统/浏览器导入并信任 `gomitm-ca.crt`
+
+## Built-in Pages
+
+- `http://198.18.0.1/`
+  - 无需先安装根证书即可访问（用于首次引导安装）
+  - 页面内可直接下载证书
+- `https://www4.google.com/`
+  - 返回 CA 安装页面（解决原站 404）
+  - 注意：该域名在浏览器中受 HSTS 影响，未信任根证书时通常不可继续访问
+  - 页面内可直接下载证书
+- `https://www4.google.com/gomitm-ca.crt`
+  - 直接下载当前实例根证书
+
+## Configuration
+
+推荐使用配置文件启动，CLI 仅做覆盖。
+
+参考文件：[`config.example.yaml`](./config.example.yaml)
+
+### Core Fields
+
+- `serve.listen`: SOCKS5 监听地址
+- `serve.admin_listen`: Admin API 监听地址
+- `serve.ca_dir`: CA 存储目录
+- `mitm.all`: 是否全量 MITM 所有 `443` 目标
+- `mitm.hosts`: 域名匹配 MITM 列表（`mitm.all=false` 时生效）
+- `modules[]`: 模块挂载列表
+- `capture.*`: 抓包与 HAR 导出相关参数
+
+### Module Schema
 
 ```yaml
 modules:
@@ -93,45 +96,101 @@ modules:
     path: "./modules/google-home-fun.sgmodule" # 也支持 https:// URL
     arguments:
       文案: "今天也要快乐摸鱼"
-  - name: YouTubeNoAds
-    enable: true
-    path: "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
+  - name: YouTubeWebLite
+    enable: false
+    path: "./modules/youtube-web-lite.sgmodule"
+    arguments:
+      启用页面样式清理: true
 ```
 
-说明：
+路径解析规则：
 
-- `modules[].path` 是本地路径时，会按 `config.yaml` 所在目录解析相对路径。
-- `.sgmodule` 内 `script-path` 是本地路径时，会按该 `.sgmodule` 文件所在目录解析相对路径。
-- 发布产物默认包含 `config.yaml` 和 `modules/` 目录，可直接解压即用。
+1. `modules[].path` 为相对路径时，相对 `config.yaml` 所在目录
+2. `.sgmodule` 内 `script-path` 为相对路径时，相对该 `.sgmodule` 文件所在目录
 
-## 压力测试
+## Demo Modules
+
+- `GoogleHomeFunDemo`（默认开启）
+  - 对 `google.com` 首页注入明显视觉标记，便于验证 MITM+脚本链路
+- `YouTubeWebLite`（实验性，默认关闭）
+  - 面向浏览器端 YouTube 的轻量清理规则
+- `YouTubeNoAds`（默认关闭）
+  - 外部远程模块示例，适用于特定 API/客户端场景
+
+## Admin API
+
+- `GET /healthz`：健康检查
+- `GET /api/captures?limit=100`：抓包列表
+- `GET /api/captures.har`：实时 HAR 导出
+
+## Capture Model
+
+每条抓包记录包含两份响应视图：
+
+1. `UpstreamResp*`：上游原始响应
+2. `Resp*`：模块处理后的最终响应
+
+并带有：
+
+- `RespModified`: 标记是否发生响应修改
+
+## Development
 
 ```bash
-# 全量单测
+go mod tidy
 go test ./...
+go run ./cmd/gomitm serve --config ./config.example.yaml
+```
 
-# 基准测试（含内存分配）
-go test -run '^$' -bench . -benchmem ./internal/capture ./internal/module ./internal/script ./internal/server
+常用测试命令：
 
-# 并发数据竞争检查
+```bash
+# race
 go test -race ./...
+
+# benchmark
+go test -run '^$' -bench . -benchmem ./internal/capture ./internal/module ./internal/script ./internal/server
 ```
 
 ## CI / Release
 
-- CI 文件：
-  - `.gitea/workflows/ci.yml`
-  - `.gitea/workflows/release.yml`
-- 触发规则：
-  - `push main` / `pull_request main`：自动执行 `go test ./...`，并做一次构建冒烟检查
-  - `push tag v*`：自动交叉编译（`linux/darwin/windows` 的 `amd64/arm64`）并发布到 Gitea Release
-  - 两个工作流都支持 `workflow_dispatch` 手动触发
-- 需要在仓库 Secrets 中配置：
-  - `TOKEN`：具备仓库 release 写权限的 token（用于上传发布资产）
+工作流文件：
 
-## 说明
+- `.gitea/workflows/ci.yml`
+- `.gitea/workflows/release.yml`
 
-- MITM 目前仅在域名命中且端口为 `443` 时触发。
-- 抓包当前仅覆盖 MITM 的 HTTP 事务，不含纯 TCP 透传流量。
-- 抓包记录包含最终响应；若命中模块响应处理，还会额外记录 `UpstreamResp*`（上游原始响应）与 `RespModified` 标记。
-- 新增本地实验模块 `YouTubeWebLite`（`modules/youtube-web-lite.sgmodule`），面向浏览器端 YouTube 的轻量去广告（默认关闭）。
+触发方式：
+
+1. `push main` / `pull_request main`：测试 + 构建冒烟
+2. `push tag v*`：交叉编译并发布 Release
+3. `workflow_dispatch`：支持手动触发发布
+   - 非 tag 引用下需提供 `release_tag`（例如 `v0.1.3`）
+
+仓库 Secret：
+
+- `TOKEN`：具备 Release 写权限
+
+## Known Limits
+
+- 当前 MITM 仅覆盖 `443` TCP 链路
+- 抓包仅覆盖 MITM 的 HTTP 事务，不包含纯 TCP 透传字节流
+- `mitm-all` 场景下，部分启用证书固定（pinning）的应用会主动断开（常见于系统服务）
+- YouTube 网页端规则属于实验性能力，受上游结构变更影响较大
+
+## Security & Legal
+
+本项目用于网络调试、协议分析和授权场景下的流量审计。  
+请在合法合规前提下使用，不要用于未授权的中间人监听。
+
+## Contributing
+
+欢迎 Issue / PR。提交前建议至少执行：
+
+```bash
+go test ./...
+go test -race ./...
+```
+
+## License
+
+见 [LICENSE](./LICENSE)。

@@ -30,7 +30,7 @@ modules:
       启用页面样式清理: true
 
 capture:
-  enabled: true
+  enabled: false
   max_entries: 1000
   max_body_bytes: 2097152
   content_types:
