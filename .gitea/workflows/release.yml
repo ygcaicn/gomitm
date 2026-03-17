@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag name for manual release (e.g. v0.1.3)"
+        required: false
+        type: string
 
 jobs:
   release:
@@ -14,6 +19,8 @@ jobs:
       SERVER_URL: ${{ gitea.server_url }}
       REPO: ${{ gitea.repository }}
       REF: ${{ gitea.ref }}
+      RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+      SHA: ${{ gitea.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,9 +38,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION="${REF#refs/tags/}"
-          if [ -z "$VERSION" ] || [ "$VERSION" = "$REF" ]; then
-            echo "invalid tag ref: $REF"
+          VERSION=""
+          if [[ "$REF" == refs/tags/* ]]; then
+            VERSION="${REF#refs/tags/}"
+          elif [ -n "${RELEASE_TAG_INPUT:-}" ]; then
+            VERSION="${RELEASE_TAG_INPUT}"
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "invalid release version: ref=$REF, release_tag input is empty"
+            echo "for workflow_dispatch on branch refs/heads/*, provide input release_tag (e.g. v0.1.3)"
             exit 1
           fi
 
@@ -96,7 +109,16 @@ jobs:
             exit 1
           fi
 
-          VERSION="${REF#refs/tags/}"
+          VERSION=""
+          if [[ "$REF" == refs/tags/* ]]; then
+            VERSION="${REF#refs/tags/}"
+          elif [ -n "${RELEASE_TAG_INPUT:-}" ]; then
+            VERSION="${RELEASE_TAG_INPUT}"
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "invalid release version: ref=$REF, release_tag input is empty"
+            exit 1
+          fi
           API_URL="${SERVER_URL%/}/api/v1"
 
           set +e
@@ -113,6 +135,7 @@ jobs:
                 tag_name: $version,
                 name: $version,
                 body: ("Automated release for " + $version),
+                target_commitish: $sha,
                 draft: false,
                 prerelease: false
               }')
