@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -461,7 +462,16 @@ func installSurgeCompat(vm *goja.Runtime) error {
 		return nil
 	}
 	if err := vm.Set("console", map[string]any{
-		"log": func(args ...any) {},
+		"log": func(args ...any) {
+			if len(args) == 0 {
+				return
+			}
+			out := make([]string, 0, len(args))
+			for _, a := range args {
+				out = append(out, fmt.Sprint(a))
+			}
+			log.Printf("[script] %s", strings.Join(out, " "))
+		},
 	}); err != nil {
 		return err
 	}
