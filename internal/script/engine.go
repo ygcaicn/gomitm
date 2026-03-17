@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -65,6 +66,9 @@ func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http
 		"headers": respHeaders,
 		"body":    string(body),
 	}
+	if rule.BinaryBodyMode {
+		responseObj["bodyBytes"] = append([]byte(nil), body...)
+	}
 
 	if err := vm.Set("$request", map[string]any{
 		"url":     fullURL(req),
@@ -117,6 +121,11 @@ func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http
 				for k, vv := range hm {
 					out.Header.Set(k, fmt.Sprint(vv))
 				}
+			}
+		}
+		if v, ok := override["bodyBytes"]; ok {
+			if b, ok := toBytes(v); ok {
+				body = b
 			}
 		}
 		if v, ok := override["body"]; ok {
@@ -195,5 +204,28 @@ func toInt(v any) (int, bool) {
 		return int(n), true
 	default:
 		return 0, false
+	}
+}
+
+func toBytes(v any) ([]byte, bool) {
+	switch b := v.(type) {
+	case []byte:
+		return append([]byte(nil), b...), true
+	case goja.ArrayBuffer:
+		return append([]byte(nil), b.Bytes()...), true
+	case string:
+		return []byte(b), true
+	case []any:
+		out := make([]byte, 0, len(b))
+		for _, item := range b {
+			n, ok := toInt(item)
+			if !ok || n < 0 || n > math.MaxUint8 {
+				return nil, false
+			}
+			out = append(out, byte(n))
+		}
+		return out, true
+	default:
+		return nil, false
 	}
 }
