@@ -51,14 +51,16 @@ const (
 )
 
 type Config struct {
-	ListenAddr  string
-	DialTimeout time.Duration
-	MITMHosts   []string
-	MITMAll     bool
-	Rewrite     []policy.RewriteRule
-	Scripts     []policy.ScriptRule
-	UDPRules    []policy.UDPRule
-	Capture     capture.Config
+	ListenAddr     string
+	DialTimeout    time.Duration
+	MITMHosts      []string
+	MITMAll        bool
+	Rewrite        []policy.RewriteRule
+	Scripts        []policy.ScriptRule
+	UDPRules       []policy.UDPRule
+	UDPMaxSessions int
+	UDPIdleTimeout time.Duration
+	Capture        capture.Config
 }
 
 type Server struct {
@@ -75,6 +77,34 @@ type Server struct {
 	seq       atomic.Uint64
 	logger    *log.Logger
 	ln        net.Listener
+
+	udpSessionsActive    atomic.Int64
+	udpSessionsTotal     atomic.Uint64
+	udpSessionLimitDrop  atomic.Uint64
+	udpPacketsInTotal    atomic.Uint64
+	udpPacketsOutTotal   atomic.Uint64
+	udpPacketsDropTotal  atomic.Uint64
+	udpPolicyRejectTotal atomic.Uint64
+	udpParseErrorTotal   atomic.Uint64
+	udpFragDropTotal     atomic.Uint64
+}
+
+type Stats struct {
+	UDP UDPStats `json:"udp"`
+}
+
+type UDPStats struct {
+	MaxSessions    int    `json:"max_sessions"`
+	IdleTimeout    string `json:"idle_timeout"`
+	ActiveSessions int64  `json:"active_sessions"`
+	TotalSessions  uint64 `json:"total_sessions"`
+	LimitDrop      uint64 `json:"limit_drop"`
+	PacketsIn      uint64 `json:"packets_in"`
+	PacketsOut     uint64 `json:"packets_out"`
+	PacketsDrop    uint64 `json:"packets_drop"`
+	PolicyReject   uint64 `json:"policy_reject"`
+	ParseError     uint64 `json:"parse_error"`
+	FragmentDrop   uint64 `json:"fragment_drop"`
 }
 
 type responseSnapshot struct {
@@ -96,6 +126,12 @@ func New(cfg Config, caManager *ca.Manager, logger *log.Logger) *Server {
 	}
 	if cfg.Capture.MaxBodyBytes <= 0 {
 		cfg.Capture.MaxBodyBytes = 2 * 1024 * 1024
+	}
+	if cfg.UDPMaxSessions <= 0 {
+		cfg.UDPMaxSessions = 1024
+	}
+	if cfg.UDPIdleTimeout <= 0 {
+		cfg.UDPIdleTimeout = 2 * time.Minute
 	}
 	if logger == nil {
 		logger = log.Default()
@@ -136,6 +172,27 @@ func (s *Server) CaptureEntries() []capture.Entry {
 		return nil
 	}
 	return s.capStore.Snapshot()
+}
+
+func (s *Server) Stats() Stats {
+	if s == nil {
+		return Stats{}
+	}
+	return Stats{
+		UDP: UDPStats{
+			MaxSessions:    s.cfg.UDPMaxSessions,
+			IdleTimeout:    s.cfg.UDPIdleTimeout.String(),
+			ActiveSessions: s.udpSessionsActive.Load(),
+			TotalSessions:  s.udpSessionsTotal.Load(),
+			LimitDrop:      s.udpSessionLimitDrop.Load(),
+			PacketsIn:      s.udpPacketsInTotal.Load(),
+			PacketsOut:     s.udpPacketsOutTotal.Load(),
+			PacketsDrop:    s.udpPacketsDropTotal.Load(),
+			PolicyReject:   s.udpPolicyRejectTotal.Load(),
+			ParseError:     s.udpParseErrorTotal.Load(),
+			FragmentDrop:   s.udpFragDropTotal.Load(),
+		},
+	}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -188,6 +245,20 @@ func (s *Server) handleConn(client net.Conn) {
 	}
 
 	if cmd == cmdUDPAssociate {
+		cur := s.udpSessionsActive.Add(1)
+		maxSessions := s.cfg.UDPMaxSessions
+		if maxSessions <= 0 {
+			maxSessions = 1024
+		}
+		if int(cur) > maxSessions {
+			s.udpSessionsActive.Add(-1)
+			s.udpSessionLimitDrop.Add(1)
+			_ = writeReply(client, repGeneralFailure, nil, 0)
+			s.logger.Printf("udp associate rejected by session limit: active=%d limit=%d", cur-1, maxSessions)
+			return
+		}
+		defer s.udpSessionsActive.Add(-1)
+		s.udpSessionsTotal.Add(1)
 		if err := s.handleUDPAssociate(client, host, port); err != nil {
 			s.logger.Printf("udp associate failed: %v", err)
 		}
@@ -354,6 +425,11 @@ func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) erro
 	var clientUDPAddr *net.UDPAddr
 	seenTargets := make(map[string]time.Time)
 	buf := make([]byte, 64*1024)
+	lastActivity := time.Now()
+	idleTimeout := s.cfg.UDPIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 2 * time.Minute
+	}
 
 	for {
 		if err := udpConn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
@@ -370,6 +446,10 @@ func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) erro
 					return nil
 				default:
 				}
+				if time.Since(lastActivity) > idleTimeout {
+					s.logger.Printf("udp associate idle timeout: %s", idleTimeout)
+					return nil
+				}
 				continue
 			}
 			select {
@@ -379,6 +459,7 @@ func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) erro
 			}
 			return fmt.Errorf("read udp relay: %w", err)
 		}
+		lastActivity = time.Now()
 
 		// Client -> relay -> target
 		if isFromUDPClient(src, clientUDPAddr, allowedClientIP) {
@@ -387,25 +468,35 @@ func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) erro
 			}
 			dgram, err := parseSocksUDPDatagram(buf[:n])
 			if err != nil {
+				s.udpParseErrorTotal.Add(1)
+				s.udpPacketsDropTotal.Add(1)
 				s.logger.Printf("udp parse failed from %s: %v", src.String(), err)
 				continue
 			}
 			if dgram.Frag != 0 {
+				s.udpFragDropTotal.Add(1)
+				s.udpPacketsDropTotal.Add(1)
 				s.logger.Printf("udp fragment not supported from %s frag=%d", src.String(), dgram.Frag)
 				continue
 			}
 			if s.shouldRejectUDPHost(dgram.Host) {
+				s.udpPolicyRejectTotal.Add(1)
+				s.udpPacketsDropTotal.Add(1)
 				s.logger.Printf("udp reject host=%s", dgram.Host)
 				continue
 			}
 			dst, err := resolveUDPAddr(dgram.Host, dgram.Port)
 			if err != nil {
+				s.udpPacketsDropTotal.Add(1)
 				s.logger.Printf("udp resolve failed %s:%d: %v", dgram.Host, dgram.Port, err)
 				continue
 			}
 			seenTargets[dst.String()] = time.Now()
 			if _, err := udpConn.WriteToUDP(dgram.Payload, dst); err != nil {
+				s.udpPacketsDropTotal.Add(1)
 				s.logger.Printf("udp forward failed to %s: %v", dst.String(), err)
+			} else {
+				s.udpPacketsInTotal.Add(1)
 			}
 			continue
 		}
@@ -415,15 +506,21 @@ func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) erro
 			continue
 		}
 		if _, ok := seenTargets[src.String()]; !ok {
+			s.udpPacketsDropTotal.Add(1)
 			continue
 		}
 		out, err := buildSocksUDPDatagramFromUDPAddr(src, buf[:n])
 		if err != nil {
+			s.udpParseErrorTotal.Add(1)
+			s.udpPacketsDropTotal.Add(1)
 			s.logger.Printf("udp build response failed from %s: %v", src.String(), err)
 			continue
 		}
 		if _, err := udpConn.WriteToUDP(out, clientUDPAddr); err != nil {
+			s.udpPacketsDropTotal.Add(1)
 			s.logger.Printf("udp relay back to client failed %s: %v", clientUDPAddr.String(), err)
+		} else {
+			s.udpPacketsOutTotal.Add(1)
 		}
 	}
 }
@@ -841,9 +938,12 @@ func buildBuiltinCAPortalPage(certPEM, downloadName string) string {
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #111; }
     .card { max-width: 900px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; }
     h1 { margin: 0 0 12px; }
+    h2 { margin: 18px 0 8px; font-size: 18px; }
     a.button { display: inline-block; background: #0b57d0; color: #fff; text-decoration: none; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; }
     pre { background: #f6f8fa; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
     .tip { color: #444; margin-bottom: 12px; }
+    ol { margin: 6px 0 12px 20px; padding: 0; }
+    li { margin: 4px 0; }
   </style>
 </head>
 <body>
@@ -851,6 +951,18 @@ func buildBuiltinCAPortalPage(certPEM, downloadName string) string {
     <h1>GoMITM 根证书安装页</h1>
     <p class="tip">你当前访问的是内置 MITM 页面。点击按钮可直接下载根证书，也可手动复制下方 PEM 内容。</p>
     <a class="button" href="` + builtinCACertPath + `">下载 CA 证书 (` + html.EscapeString(downloadName) + `)</a>
+    <h2>Android 安装（简要）</h2>
+    <ol>
+      <li>下载上方证书并保存到本机（.crt/.pem）。</li>
+      <li>进入 设置 → 安全（或隐私与安全）→ 加密与凭据 → 从存储设备安装证书。</li>
+      <li>证书用途选择“VPN 和应用”，完成后在“受信任的凭据/用户凭据”中确认已安装。</li>
+    </ol>
+    <h2>iOS 安装（简要）</h2>
+    <ol>
+      <li>下载上方证书后，系统会提示“描述文件已下载”。</li>
+      <li>进入 设置 → 通用 → VPN 与设备管理（或描述文件）完成安装。</li>
+      <li>进入 设置 → 通用 → 关于本机 → 证书信任设置，手动开启该根证书的完全信任。</li>
+    </ol>
     <pre>` + escapedCert + `</pre>
   </div>
 </body>

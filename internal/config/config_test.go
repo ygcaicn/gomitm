@@ -15,6 +15,8 @@ serve:
   admin_listen: "127.0.0.1:19090"
   ca_dir: "~/.gomitm/ca"
   dial_timeout: "12s"
+  udp_max_sessions: 2048
+  udp_idle_timeout: "3m"
 mitm:
   all: true
   hosts:
@@ -51,6 +53,12 @@ capture:
 	}
 	if cfg.Capture.MaxEntries != 123 {
 		t.Fatalf("max_entries got=%d", cfg.Capture.MaxEntries)
+	}
+	if cfg.Serve.UDPMaxSessions != 2048 {
+		t.Fatalf("udp max sessions got=%d", cfg.Serve.UDPMaxSessions)
+	}
+	if cfg.Serve.UDPIdleTimeout != "3m" {
+		t.Fatalf("udp idle timeout got=%q", cfg.Serve.UDPIdleTimeout)
 	}
 	if !cfg.MITM.All {
 		t.Fatal("mitm.all should be true")

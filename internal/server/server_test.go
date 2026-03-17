@@ -194,6 +194,12 @@ func TestHandleBuiltinCAPortal(t *testing.T) {
 		if !strings.Contains(out, "GoMITM 根证书安装页") {
 			t.Fatalf("unexpected body: %s", out)
 		}
+		if !strings.Contains(out, "Android 安装（简要）") {
+			t.Fatalf("expected Android guide in portal: %s", out)
+		}
+		if !strings.Contains(out, "iOS 安装（简要）") {
+			t.Fatalf("expected iOS guide in portal: %s", out)
+		}
 		if !strings.Contains(out, "BEGIN CERTIFICATE") {
 			t.Fatalf("expected certificate content in portal: %s", out)
 		}
@@ -516,5 +522,84 @@ func TestHandleUDPAssociateRelayRejectRule(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("udp associate handler did not exit")
+	}
+}
+
+func TestHandleConnUDPAssociateSessionLimit(t *testing.T) {
+	s := &Server{
+		cfg: Config{
+			UDPMaxSessions: 1,
+			UDPIdleTimeout: 2 * time.Minute,
+		},
+		logger: log.New(io.Discard, "", 0),
+	}
+	s.udpSessionsActive.Store(1)
+
+	client, srv := net.Pipe()
+	defer client.Close()
+	go s.handleConn(srv)
+
+	if _, err := client.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatalf("write greeting failed: %v", err)
+	}
+	methodResp := make([]byte, 2)
+	if _, err := io.ReadFull(client, methodResp); err != nil {
+		t.Fatalf("read method response failed: %v", err)
+	}
+	if methodResp[0] != 0x05 || methodResp[1] != 0x00 {
+		t.Fatalf("unexpected method response: %v", methodResp)
+	}
+
+	req := []byte{
+		0x05, 0x03, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00,
+	}
+	if _, err := client.Write(req); err != nil {
+		t.Fatalf("write request failed: %v", err)
+	}
+
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read reply failed: %v", err)
+	}
+	if reply[1] != repGeneralFailure {
+		t.Fatalf("reply code got=%d want=%d", reply[1], repGeneralFailure)
+	}
+}
+
+func TestHandleUDPAssociateIdleTimeout(t *testing.T) {
+	s := &Server{
+		cfg: Config{
+			UDPMaxSessions: 16,
+			UDPIdleTimeout: 200 * time.Millisecond,
+		},
+		logger: log.New(io.Discard, "", 0),
+	}
+
+	client, serverConn := net.Pipe()
+	defer client.Close()
+	defer serverConn.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.handleUDPAssociate(serverConn, "0.0.0.0", 0)
+	}()
+
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read reply failed: %v", err)
+	}
+	if reply[1] != repSucceeded {
+		t.Fatalf("reply code got=%d", reply[1])
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("handle udp associate failed: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("idle timeout did not trigger")
 	}
 }

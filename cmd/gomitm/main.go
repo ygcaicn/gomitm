@@ -28,6 +28,8 @@ const (
 	defaultListen             = ":1080"
 	defaultCADir              = "~/.gomitm/ca"
 	defaultDialTimeout        = 10 * time.Second
+	defaultUDPIdleTimeout     = 2 * time.Minute
+	defaultUDPMaxSessions     = 1024
 	defaultCaptureMaxEntries  = 1000
 	defaultCaptureMaxBody     = 2 * 1024 * 1024
 	defaultCaptureContentType = "application/json,text/*"
@@ -36,10 +38,12 @@ const (
 type serveOptions struct {
 	ConfigPath string
 
-	Listen      string
-	AdminListen string
-	CADir       string
-	DialTimeout time.Duration
+	Listen         string
+	AdminListen    string
+	CADir          string
+	DialTimeout    time.Duration
+	UDPMaxSessions int
+	UDPIdleTimeout time.Duration
 
 	MITMHosts []string
 	MITMAll   bool
@@ -58,6 +62,8 @@ func defaultServeOptions() serveOptions {
 		Listen:              defaultListen,
 		CADir:               defaultCADir,
 		DialTimeout:         defaultDialTimeout,
+		UDPMaxSessions:      defaultUDPMaxSessions,
+		UDPIdleTimeout:      defaultUDPIdleTimeout,
 		CaptureMaxEntries:   defaultCaptureMaxEntries,
 		CaptureMaxBodyBytes: defaultCaptureMaxBody,
 		CaptureTypes:        splitCommaList(defaultCaptureContentType),
@@ -120,16 +126,19 @@ func runServe(args []string) error {
 		udpRules = append(udpRules, parsedModule.UDPRules...)
 	}
 	log.Printf("policy loaded: mitm_hosts=%d rewrite_rules=%d scripts=%d udp_rules=%d", len(hosts), len(rewriteRules), len(scriptRules), len(udpRules))
+	log.Printf("udp config: max_sessions=%d idle_timeout=%s", opts.UDPMaxSessions, opts.UDPIdleTimeout)
 	log.Printf("capture config: enabled=%v max_entries=%d max_body_bytes=%d har_out=%q", opts.CaptureEnabled, opts.CaptureMaxEntries, opts.CaptureMaxBodyBytes, opts.HAROut)
 
 	srv := server.New(server.Config{
-		ListenAddr:  opts.Listen,
-		DialTimeout: opts.DialTimeout,
-		MITMHosts:   hosts,
-		MITMAll:     opts.MITMAll,
-		Rewrite:     rewriteRules,
-		Scripts:     scriptRules,
-		UDPRules:    udpRules,
+		ListenAddr:     opts.Listen,
+		DialTimeout:    opts.DialTimeout,
+		UDPMaxSessions: opts.UDPMaxSessions,
+		UDPIdleTimeout: opts.UDPIdleTimeout,
+		MITMHosts:      hosts,
+		MITMAll:        opts.MITMAll,
+		Rewrite:        rewriteRules,
+		Scripts:        scriptRules,
+		UDPRules:       udpRules,
 		Capture: capture.Config{
 			Enabled:      opts.CaptureEnabled,
 			MaxEntries:   opts.CaptureMaxEntries,
@@ -188,6 +197,8 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	moduleFiles := fs.String("module-files", "", "comma-separated local sgmodule file paths")
 	moduleArgs := fs.String("module-args", "", "module argument overrides, e.g. key1=value1,key2=true")
 	dialTimeout := fs.String("dial-timeout", "", "upstream dial timeout (e.g. 10s)")
+	udpMaxSessions := fs.Int("udp-max-sessions", 0, "max active UDP ASSOCIATE sessions")
+	udpIdleTimeout := fs.String("udp-idle-timeout", "", "idle timeout for UDP ASSOCIATE session (e.g. 2m)")
 	captureEnabled := fs.Bool("capture-enabled", false, "enable MITM HTTP capture")
 	captureMaxEntries := fs.Int("capture-max-entries", 0, "max in-memory capture entries")
 	captureMaxBodyBytes := fs.Int64("capture-max-body-bytes", 0, "max captured response body size in bytes")
@@ -269,6 +280,16 @@ func parseServeOptions(args []string) (serveOptions, error) {
 		}
 		opts.DialTimeout = d
 	}
+	if visited["udp-max-sessions"] {
+		opts.UDPMaxSessions = *udpMaxSessions
+	}
+	if visited["udp-idle-timeout"] {
+		d, err := time.ParseDuration(strings.TrimSpace(*udpIdleTimeout))
+		if err != nil {
+			return opts, fmt.Errorf("invalid --udp-idle-timeout: %w", err)
+		}
+		opts.UDPIdleTimeout = d
+	}
 	if visited["capture-enabled"] {
 		opts.CaptureEnabled = *captureEnabled
 	}
@@ -293,6 +314,12 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	}
 	if opts.DialTimeout <= 0 {
 		opts.DialTimeout = defaultDialTimeout
+	}
+	if opts.UDPMaxSessions <= 0 {
+		opts.UDPMaxSessions = defaultUDPMaxSessions
+	}
+	if opts.UDPIdleTimeout <= 0 {
+		opts.UDPIdleTimeout = defaultUDPIdleTimeout
 	}
 	if opts.CaptureMaxEntries <= 0 {
 		opts.CaptureMaxEntries = defaultCaptureMaxEntries
@@ -325,6 +352,16 @@ func applyConfigFile(opts *serveOptions, cfg *config.File) error {
 			return fmt.Errorf("invalid config serve.dial_timeout: %w", err)
 		}
 		opts.DialTimeout = d
+	}
+	if cfg.Serve.UDPMaxSessions > 0 {
+		opts.UDPMaxSessions = cfg.Serve.UDPMaxSessions
+	}
+	if strings.TrimSpace(cfg.Serve.UDPIdleTimeout) != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(cfg.Serve.UDPIdleTimeout))
+		if err != nil {
+			return fmt.Errorf("invalid config serve.udp_idle_timeout: %w", err)
+		}
+		opts.UDPIdleTimeout = d
 	}
 
 	opts.MITMHosts = append([]string{}, cfg.MITM.Hosts...)

@@ -13,6 +13,8 @@ func TestParseServeOptionsWithConfigAndCLIOverride(t *testing.T) {
 serve:
   listen: ":2080"
   dial_timeout: "12s"
+  udp_max_sessions: 777
+  udp_idle_timeout: "90s"
 mitm:
   all: false
   hosts: ["a.com"]
@@ -48,6 +50,12 @@ capture:
 	if opts.DialTimeout.String() != "12s" {
 		t.Fatalf("dial timeout got=%s", opts.DialTimeout)
 	}
+	if opts.UDPMaxSessions != 777 {
+		t.Fatalf("udp max sessions got=%d", opts.UDPMaxSessions)
+	}
+	if opts.UDPIdleTimeout.String() != "1m30s" {
+		t.Fatalf("udp idle timeout got=%s", opts.UDPIdleTimeout)
+	}
 	if !opts.CaptureEnabled {
 		t.Fatal("capture enabled should come from config")
 	}
@@ -68,6 +76,22 @@ capture:
 	}
 	if opts.ModuleSources[0].Arguments["屏蔽上传按钮"] != "true" {
 		t.Fatalf("module arg got=%q", opts.ModuleSources[0].Arguments["屏蔽上传按钮"])
+	}
+}
+
+func TestParseServeOptionsUDPCLIOverride(t *testing.T) {
+	opts, err := parseServeOptions([]string{
+		"--udp-max-sessions", "123",
+		"--udp-idle-timeout", "45s",
+	})
+	if err != nil {
+		t.Fatalf("parseServeOptions failed: %v", err)
+	}
+	if opts.UDPMaxSessions != 123 {
+		t.Fatalf("udp max sessions got=%d", opts.UDPMaxSessions)
+	}
+	if opts.UDPIdleTimeout.String() != "45s" {
+		t.Fatalf("udp idle timeout got=%s", opts.UDPIdleTimeout)
 	}
 }
 

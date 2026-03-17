@@ -7,6 +7,7 @@ import (
 
 	"gomitm/internal/capture"
 	"gomitm/internal/har"
+	srvstats "gomitm/internal/server"
 )
 
 type CaptureProvider interface {
@@ -21,6 +22,7 @@ func NewHandler(provider CaptureProvider) http.Handler {
 	h := &Handler{provider: provider}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
+	mux.HandleFunc("/api/stats", h.stats)
 	mux.HandleFunc("/api/captures", h.captures)
 	mux.HandleFunc("/api/captures.har", h.capturesHAR)
 	return mux
@@ -37,6 +39,18 @@ func (h *Handler) captures(w http.ResponseWriter, r *http.Request) {
 		entries = entries[len(entries)-limit:]
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+func (h *Handler) stats(w http.ResponseWriter, _ *http.Request) {
+	if h == nil || h.provider == nil {
+		writeJSON(w, http.StatusOK, map[string]any{})
+		return
+	}
+	if p, ok := h.provider.(interface{ Stats() srvstats.Stats }); ok {
+		writeJSON(w, http.StatusOK, p.Stats())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
 func (h *Handler) capturesHAR(w http.ResponseWriter, _ *http.Request) {

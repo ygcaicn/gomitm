@@ -15,10 +15,12 @@ type File struct {
 }
 
 type Serve struct {
-	Listen      string `yaml:"listen"`
-	AdminListen string `yaml:"admin_listen"`
-	CADir       string `yaml:"ca_dir"`
-	DialTimeout string `yaml:"dial_timeout"`
+	Listen         string `yaml:"listen"`
+	AdminListen    string `yaml:"admin_listen"`
+	CADir          string `yaml:"ca_dir"`
+	DialTimeout    string `yaml:"dial_timeout"`
+	UDPMaxSessions int    `yaml:"udp_max_sessions"`
+	UDPIdleTimeout string `yaml:"udp_idle_timeout"`
 }
 
 type MITM struct {

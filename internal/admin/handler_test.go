@@ -9,16 +9,22 @@ import (
 	"time"
 
 	"gomitm/internal/capture"
+	srvstats "gomitm/internal/server"
 )
 
 type fakeProvider struct {
 	entries []capture.Entry
+	stats   srvstats.Stats
 }
 
 func (f fakeProvider) CaptureEntries() []capture.Entry {
 	out := make([]capture.Entry, len(f.entries))
 	copy(out, f.entries)
 	return out
+}
+
+func (f fakeProvider) Stats() srvstats.Stats {
+	return f.stats
 }
 
 func TestHealthz(t *testing.T) {
@@ -71,6 +77,30 @@ func TestCapturesHAR(t *testing.T) {
 		t.Fatalf("content-type got=%q", ct)
 	}
 	if !strings.Contains(rr.Body.String(), `"log"`) {
+		t.Fatalf("unexpected body: %s", rr.Body.String())
+	}
+}
+
+func TestStats(t *testing.T) {
+	h := NewHandler(fakeProvider{
+		stats: srvstats.Stats{
+			UDP: srvstats.UDPStats{
+				ActiveSessions: 2,
+				PacketsDrop:    3,
+			},
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status got=%d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"udp"`) {
+		t.Fatalf("unexpected body: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"active_sessions":2`) {
 		t.Fatalf("unexpected body: %s", rr.Body.String())
 	}
 }
