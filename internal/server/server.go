@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"html"
@@ -317,38 +318,98 @@ func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) erro
 	defer udpConn.Close()
 
 	bindIP, bindPort := addrFrom(udpConn.LocalAddr())
-	if err := writeReply(client, repSucceeded, bindIP, bindPort); err != nil {
+	replyIP := bindIP
+	if tcpLocalIP, _ := addrFrom(client.LocalAddr()); tcpLocalIP != nil && !tcpLocalIP.IsUnspecified() {
+		replyIP = tcpLocalIP
+	}
+	if err := writeReply(client, repSucceeded, replyIP, bindPort); err != nil {
 		return fmt.Errorf("write udp associate reply: %w", err)
 	}
-	s.logger.Printf("UDP ASSOCIATE %s:%d relay=%s:%d (drop mode)", host, port, bindIP.String(), bindPort)
+	allowedClientIP, _ := addrFrom(client.RemoteAddr())
+	s.logger.Printf("UDP ASSOCIATE %s:%d relay=%s:%d", host, port, replyIP.String(), bindPort)
 
-	// Keep consuming UDP packets to ensure client keeps using this association,
-	// while intentionally not forwarding them.
-	done := make(chan struct{})
+	closed := make(chan struct{})
 	go func() {
-		defer close(done)
-		buf := make([]byte, 64*1024)
-		for {
-			if err := udpConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-				return
-			}
-			if _, _, err := udpConn.ReadFromUDP(buf); err != nil {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					continue
-				}
-				return
-			}
-		}
+		defer close(closed)
+		_, _ = io.Copy(io.Discard, client)
+		_ = udpConn.Close()
 	}()
 
-	_ = client.SetReadDeadline(time.Now().Add(24 * time.Hour))
-	_, _ = io.Copy(io.Discard, client)
-	_ = udpConn.Close()
-	<-done
-	return nil
+	var clientUDPAddr *net.UDPAddr
+	seenTargets := make(map[string]time.Time)
+	buf := make([]byte, 64*1024)
+
+	for {
+		if err := udpConn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
+			return fmt.Errorf("set udp read deadline: %w", err)
+		}
+		n, src, err := udpConn.ReadFromUDP(buf)
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				select {
+				case <-closed:
+					return nil
+				default:
+				}
+				continue
+			}
+			select {
+			case <-closed:
+				return nil
+			default:
+			}
+			return fmt.Errorf("read udp relay: %w", err)
+		}
+
+		// Client -> relay -> target
+		if isFromUDPClient(src, clientUDPAddr, allowedClientIP) {
+			if clientUDPAddr == nil {
+				clientUDPAddr = src
+			}
+			dgram, err := parseSocksUDPDatagram(buf[:n])
+			if err != nil {
+				s.logger.Printf("udp parse failed from %s: %v", src.String(), err)
+				continue
+			}
+			if dgram.Frag != 0 {
+				s.logger.Printf("udp fragment not supported from %s frag=%d", src.String(), dgram.Frag)
+				continue
+			}
+			dst, err := resolveUDPAddr(dgram.Host, dgram.Port)
+			if err != nil {
+				s.logger.Printf("udp resolve failed %s:%d: %v", dgram.Host, dgram.Port, err)
+				continue
+			}
+			seenTargets[dst.String()] = time.Now()
+			if _, err := udpConn.WriteToUDP(dgram.Payload, dst); err != nil {
+				s.logger.Printf("udp forward failed to %s: %v", dst.String(), err)
+			}
+			continue
+		}
+
+		// Target -> relay -> client
+		if clientUDPAddr == nil {
+			continue
+		}
+		if _, ok := seenTargets[src.String()]; !ok {
+			continue
+		}
+		out, err := buildSocksUDPDatagramFromUDPAddr(src, buf[:n])
+		if err != nil {
+			s.logger.Printf("udp build response failed from %s: %v", src.String(), err)
+			continue
+		}
+		if _, err := udpConn.WriteToUDP(out, clientUDPAddr); err != nil {
+			s.logger.Printf("udp relay back to client failed %s: %v", clientUDPAddr.String(), err)
+		}
+	}
 }
 
 var errAddrTypeNotSupported = errors.New("address type not supported")
+var errInvalidSocksUDPDatagram = errors.New("invalid socks udp datagram")
 
 func readAddress(r io.Reader, atyp byte) (string, error) {
 	switch atyp {
@@ -381,6 +442,115 @@ func readAddress(r io.Reader, atyp byte) (string, error) {
 	default:
 		return "", errAddrTypeNotSupported
 	}
+}
+
+type socksUDPDatagram struct {
+	Frag    byte
+	Host    string
+	Port    int
+	Payload []byte
+}
+
+func parseSocksUDPDatagram(packet []byte) (socksUDPDatagram, error) {
+	if len(packet) < 4 {
+		return socksUDPDatagram{}, errInvalidSocksUDPDatagram
+	}
+	if packet[0] != 0x00 || packet[1] != 0x00 {
+		return socksUDPDatagram{}, errInvalidSocksUDPDatagram
+	}
+
+	d := socksUDPDatagram{Frag: packet[2]}
+	atyp := packet[3]
+	idx := 4
+
+	switch atyp {
+	case atypIPv4:
+		if len(packet) < idx+net.IPv4len+2 {
+			return socksUDPDatagram{}, errInvalidSocksUDPDatagram
+		}
+		d.Host = net.IP(packet[idx : idx+net.IPv4len]).String()
+		idx += net.IPv4len
+	case atypIPv6:
+		if len(packet) < idx+net.IPv6len+2 {
+			return socksUDPDatagram{}, errInvalidSocksUDPDatagram
+		}
+		d.Host = net.IP(packet[idx : idx+net.IPv6len]).String()
+		idx += net.IPv6len
+	case atypDomain:
+		if len(packet) < idx+1 {
+			return socksUDPDatagram{}, errInvalidSocksUDPDatagram
+		}
+		l := int(packet[idx])
+		idx++
+		if l == 0 || len(packet) < idx+l+2 {
+			return socksUDPDatagram{}, errInvalidSocksUDPDatagram
+		}
+		d.Host = string(packet[idx : idx+l])
+		idx += l
+	default:
+		return socksUDPDatagram{}, errAddrTypeNotSupported
+	}
+
+	d.Port = int(binary.BigEndian.Uint16(packet[idx : idx+2]))
+	idx += 2
+	d.Payload = append([]byte(nil), packet[idx:]...)
+	return d, nil
+}
+
+func buildSocksUDPDatagram(host string, port int, payload []byte) ([]byte, error) {
+	host = strings.TrimSpace(host)
+	if host == "" || port < 0 || port > 65535 {
+		return nil, errInvalidSocksUDPDatagram
+	}
+
+	buf := make([]byte, 0, 4+len(host)+2+len(payload))
+	buf = append(buf, 0x00, 0x00, 0x00) // RSV + FRAG
+
+	if ip := net.ParseIP(host); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			buf = append(buf, atypIPv4)
+			buf = append(buf, ip4...)
+		} else {
+			buf = append(buf, atypIPv6)
+			buf = append(buf, ip.To16()...)
+		}
+	} else {
+		if len(host) > 255 {
+			return nil, errInvalidSocksUDPDatagram
+		}
+		buf = append(buf, atypDomain, byte(len(host)))
+		buf = append(buf, host...)
+	}
+	buf = append(buf, byte(port>>8), byte(port))
+	buf = append(buf, payload...)
+	return buf, nil
+}
+
+func buildSocksUDPDatagramFromUDPAddr(addr *net.UDPAddr, payload []byte) ([]byte, error) {
+	if addr == nil {
+		return nil, errInvalidSocksUDPDatagram
+	}
+	return buildSocksUDPDatagram(addr.IP.String(), addr.Port, payload)
+}
+
+func resolveUDPAddr(host string, port int) (*net.UDPAddr, error) {
+	if port < 0 || port > 65535 {
+		return nil, fmt.Errorf("invalid port %d", port)
+	}
+	return net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
+}
+
+func isFromUDPClient(src *net.UDPAddr, fixedClient *net.UDPAddr, allowedClientIP net.IP) bool {
+	if src == nil {
+		return false
+	}
+	if fixedClient != nil {
+		return src.Port == fixedClient.Port && src.IP.Equal(fixedClient.IP)
+	}
+	if allowedClientIP == nil || allowedClientIP.IsUnspecified() {
+		return true
+	}
+	return src.IP.Equal(allowedClientIP)
 }
 
 func writeReply(w io.Writer, rep byte, ip net.IP, port int) error {
@@ -985,13 +1155,20 @@ func closeWrite(conn net.Conn) {
 }
 
 func addrFrom(a net.Addr) (net.IP, int) {
-	tcpAddr, ok := a.(*net.TCPAddr)
-	if !ok {
+	switch v := a.(type) {
+	case *net.TCPAddr:
+		ip4 := v.IP.To4()
+		if ip4 == nil {
+			return v.IP, v.Port
+		}
+		return ip4, v.Port
+	case *net.UDPAddr:
+		ip4 := v.IP.To4()
+		if ip4 == nil {
+			return v.IP, v.Port
+		}
+		return ip4, v.Port
+	default:
 		return net.IPv4zero, 0
 	}
-	ip4 := tcpAddr.IP.To4()
-	if ip4 == nil {
-		return net.IPv4zero, tcpAddr.Port
-	}
-	return ip4, tcpAddr.Port
 }

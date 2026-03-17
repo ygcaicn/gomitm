@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -301,4 +302,130 @@ func TestReadSocksRequestUDPAssociate(t *testing.T) {
 	if host != "0.0.0.0" || port != 0 {
 		t.Fatalf("host/port got=%s:%d", host, port)
 	}
+}
+
+func TestSocksUDPDatagramParseAndBuildDomain(t *testing.T) {
+	raw, err := buildSocksUDPDatagram("example.com", 5353, []byte("abc"))
+	if err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+	d, err := parseSocksUDPDatagram(raw)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if d.Host != "example.com" || d.Port != 5353 || d.Frag != 0 {
+		t.Fatalf("unexpected parsed header: %+v", d)
+	}
+	if got := string(d.Payload); got != "abc" {
+		t.Fatalf("payload got=%q", got)
+	}
+}
+
+func TestParseSocksUDPDatagramRejectsInvalid(t *testing.T) {
+	_, err := parseSocksUDPDatagram([]byte{0x00, 0x00, 0x00})
+	if !errors.Is(err, errInvalidSocksUDPDatagram) {
+		t.Fatalf("err got=%v", err)
+	}
+}
+
+func TestHandleUDPAssociateRelayRoundTrip(t *testing.T) {
+	echoConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen echo udp failed: %v", err)
+	}
+	defer echoConn.Close()
+
+	doneEcho := make(chan struct{})
+	go func() {
+		defer close(doneEcho)
+		buf := make([]byte, 2048)
+		for {
+			_ = echoConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			n, addr, err := echoConn.ReadFromUDP(buf)
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					return
+				}
+				return
+			}
+			_, _ = echoConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	s := &Server{logger: log.New(io.Discard, "", 0)}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp failed: %v", err)
+	}
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer conn.Close()
+		errCh <- s.handleUDPAssociate(conn, "0.0.0.0", 0)
+	}()
+
+	ctrl, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial tcp failed: %v", err)
+	}
+	defer ctrl.Close()
+
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(ctrl, reply); err != nil {
+		t.Fatalf("read socks reply failed: %v", err)
+	}
+	if reply[1] != repSucceeded {
+		t.Fatalf("reply code got=%d", reply[1])
+	}
+	relayPort := int(reply[8])<<8 | int(reply[9])
+	if relayPort == 0 {
+		t.Fatal("relay port should not be zero")
+	}
+
+	udpClient, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp client failed: %v", err)
+	}
+	defer udpClient.Close()
+
+	echoHost, echoPort := addrFrom(echoConn.LocalAddr())
+	packet, err := buildSocksUDPDatagram(echoHost.String(), echoPort, []byte("ping"))
+	if err != nil {
+		t.Fatalf("build udp packet failed: %v", err)
+	}
+	relayAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: relayPort}
+	if _, err := udpClient.WriteToUDP(packet, relayAddr); err != nil {
+		t.Fatalf("write udp packet failed: %v", err)
+	}
+
+	buf := make([]byte, 2048)
+	_ = udpClient.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _, err := udpClient.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("read udp response failed: %v", err)
+	}
+	dgram, err := parseSocksUDPDatagram(buf[:n])
+	if err != nil {
+		t.Fatalf("parse udp response failed: %v", err)
+	}
+	if string(dgram.Payload) != "ping" {
+		t.Fatalf("payload got=%q", string(dgram.Payload))
+	}
+
+	_ = ctrl.Close()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("handle udp associate failed: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("udp associate handler did not exit")
+	}
+	<-doneEcho
 }
