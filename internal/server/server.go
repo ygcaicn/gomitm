@@ -57,6 +57,7 @@ type Config struct {
 	MITMAll     bool
 	Rewrite     []policy.RewriteRule
 	Scripts     []policy.ScriptRule
+	UDPRules    []policy.UDPRule
 	Capture     capture.Config
 }
 
@@ -66,6 +67,7 @@ type Server struct {
 	matcher   *domain.Matcher
 	rewrite   []policy.RewriteRule
 	scripts   []policy.ScriptRule
+	udpRules  []policy.UDPRule
 	engine    *script.Engine
 	transport *http.Transport
 	capCfg    capture.Config
@@ -120,6 +122,7 @@ func New(cfg Config, caManager *ca.Manager, logger *log.Logger) *Server {
 		matcher:   domain.NewMatcher(cfg.MITMHosts),
 		rewrite:   cfg.Rewrite,
 		scripts:   cfg.Scripts,
+		udpRules:  cfg.UDPRules,
 		engine:    script.NewEngine(),
 		transport: transport,
 		capCfg:    cfg.Capture,
@@ -246,6 +249,19 @@ func (s *Server) shouldMITM(host string, port int) bool {
 		return true
 	}
 	return s.matcher.Match(normalizeHost(host))
+}
+
+func (s *Server) shouldRejectUDPHost(host string) bool {
+	host = normalizeHost(host)
+	if host == "" || len(s.udpRules) == 0 {
+		return false
+	}
+	for _, r := range s.udpRules {
+		if r.MatchHost(host) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleGreeting(conn net.Conn) error {
@@ -376,6 +392,10 @@ func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) erro
 			}
 			if dgram.Frag != 0 {
 				s.logger.Printf("udp fragment not supported from %s frag=%d", src.String(), dgram.Frag)
+				continue
+			}
+			if s.shouldRejectUDPHost(dgram.Host) {
+				s.logger.Printf("udp reject host=%s", dgram.Host)
 				continue
 			}
 			dst, err := resolveUDPAddr(dgram.Host, dgram.Port)

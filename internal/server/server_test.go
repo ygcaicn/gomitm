@@ -150,6 +150,24 @@ func TestShouldMITMAll(t *testing.T) {
 	}
 }
 
+func TestShouldRejectUDPHost(t *testing.T) {
+	s := &Server{
+		udpRules: []policy.UDPRule{
+			{Domain: "youtubei.googleapis.com"},
+			{DomainSuffix: "googlevideo.com"},
+		},
+	}
+	if !s.shouldRejectUDPHost("youtubei.googleapis.com") {
+		t.Fatal("exact domain rule should match")
+	}
+	if !s.shouldRejectUDPHost("rr5---sn-a5mlrnl6.googlevideo.com") {
+		t.Fatal("domain suffix rule should match")
+	}
+	if s.shouldRejectUDPHost("googlevideo.com.evil") {
+		t.Fatal("suffix should not match superstring")
+	}
+}
+
 func TestHandleBuiltinCAPortal(t *testing.T) {
 	dir := t.TempDir()
 	caManager, err := ca.Init(dir)
@@ -428,4 +446,75 @@ func TestHandleUDPAssociateRelayRoundTrip(t *testing.T) {
 		t.Fatal("udp associate handler did not exit")
 	}
 	<-doneEcho
+}
+
+func TestHandleUDPAssociateRelayRejectRule(t *testing.T) {
+	s := &Server{
+		logger: log.New(io.Discard, "", 0),
+		udpRules: []policy.UDPRule{
+			{DomainSuffix: "googlevideo.com"},
+		},
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp failed: %v", err)
+	}
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer conn.Close()
+		errCh <- s.handleUDPAssociate(conn, "0.0.0.0", 0)
+	}()
+
+	ctrl, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial tcp failed: %v", err)
+	}
+	defer ctrl.Close()
+
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(ctrl, reply); err != nil {
+		t.Fatalf("read socks reply failed: %v", err)
+	}
+	relayPort := int(reply[8])<<8 | int(reply[9])
+	if relayPort == 0 {
+		t.Fatal("relay port should not be zero")
+	}
+
+	udpClient, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp client failed: %v", err)
+	}
+	defer udpClient.Close()
+
+	packet, err := buildSocksUDPDatagram("rr5---sn-a5mlrnl6.googlevideo.com", 443, []byte("ping"))
+	if err != nil {
+		t.Fatalf("build udp packet failed: %v", err)
+	}
+	relayAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: relayPort}
+	if _, err := udpClient.WriteToUDP(packet, relayAddr); err != nil {
+		t.Fatalf("write udp packet failed: %v", err)
+	}
+
+	buf := make([]byte, 128)
+	_ = udpClient.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if _, _, err := udpClient.ReadFromUDP(buf); err == nil {
+		t.Fatal("expected no udp response for rejected host")
+	}
+
+	_ = ctrl.Close()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("handle udp associate failed: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("udp associate handler did not exit")
+	}
 }

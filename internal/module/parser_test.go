@@ -16,6 +16,10 @@ func TestParse(t *testing.T) {
 ^https?:\/\/example\.com\/foo - reject
 invalid line
 
+[Rule]
+AND,((DOMAIN-SUFFIX,googlevideo.com), (PROTOCOL,UDP)),REJECT
+AND,((DOMAIN,youtubei.googleapis.com), (PROTOCOL,UDP)),REJECT
+
 [MITM]
 hostname = %APPEND% *.googlevideo.com, youtubei.googleapis.com
 `
@@ -47,6 +51,15 @@ hostname = %APPEND% *.googlevideo.com, youtubei.googleapis.com
 			t.Fatalf("unexpected host: %s", h)
 		}
 	}
+	if len(p.UDPRules) != 2 {
+		t.Fatalf("udp rules count got=%d want=2", len(p.UDPRules))
+	}
+	if p.UDPRules[0].DomainSuffix != "googlevideo.com" {
+		t.Fatalf("udp rule[0] got=%+v", p.UDPRules[0])
+	}
+	if p.UDPRules[1].Domain != "youtubei.googleapis.com" {
+		t.Fatalf("udp rule[1] got=%+v", p.UDPRules[1])
+	}
 }
 
 func TestParseRewriteLine(t *testing.T) {
@@ -57,5 +70,27 @@ func TestParseRewriteLine(t *testing.T) {
 	}
 	if !r.Match("https://a.com") {
 		t.Fatal("regex should match")
+	}
+}
+
+func TestParseRuleLine(t *testing.T) {
+	r, ok := parseRuleLine(`AND,((DOMAIN-SUFFIX,googlevideo.com), (PROTOCOL,UDP)),REJECT`)
+	if !ok {
+		t.Fatal("expected rule parse success")
+	}
+	if r.DomainSuffix != "googlevideo.com" {
+		t.Fatalf("domain-suffix got=%q", r.DomainSuffix)
+	}
+
+	r2, ok := parseRuleLine(`AND,((DOMAIN,youtubei.googleapis.com), (PROTOCOL,UDP)),REJECT`)
+	if !ok {
+		t.Fatal("expected domain rule parse success")
+	}
+	if r2.Domain != "youtubei.googleapis.com" {
+		t.Fatalf("domain got=%q", r2.Domain)
+	}
+
+	if _, ok := parseRuleLine(`DOMAIN-SUFFIX,googlevideo.com,REJECT`); ok {
+		t.Fatal("expected unsupported rule format to be ignored")
 	}
 }

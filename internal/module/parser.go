@@ -21,6 +21,7 @@ type Parsed struct {
 	MITMHosts []string
 	Rewrite   []policy.RewriteRule
 	Scripts   []policy.ScriptRule
+	UDPRules  []policy.UDPRule
 }
 
 type Source struct {
@@ -170,6 +171,11 @@ func ParseWithArgs(r io.Reader, args map[string]string) (*Parsed, error) {
 		}
 
 		switch section {
+		case "rule":
+			rule, ok := parseRuleLine(line)
+			if ok {
+				out.UDPRules = append(out.UDPRules, rule)
+			}
 		case "mitm":
 			parseMITMLine(out, line)
 		case "url rewrite":
@@ -204,6 +210,7 @@ func (p *Parsed) Merge(other *Parsed) {
 	p.MITMHosts = append(p.MITMHosts, other.MITMHosts...)
 	p.Rewrite = append(p.Rewrite, other.Rewrite...)
 	p.Scripts = append(p.Scripts, other.Scripts...)
+	p.UDPRules = append(p.UDPRules, other.UDPRules...)
 }
 
 func (p *Parsed) DedupHosts() {
@@ -285,6 +292,34 @@ func parseRewriteLine(line string) (policy.RewriteRule, bool) {
 		return policy.RewriteRule{}, false
 	}
 	return policy.RewriteRule{Pattern: re, Action: action, Raw: line}, true
+}
+
+func parseRuleLine(line string) (policy.UDPRule, bool) {
+	raw := strings.TrimSpace(line)
+	if raw == "" {
+		return policy.UDPRule{}, false
+	}
+	lower := strings.ToLower(raw)
+	if !strings.HasSuffix(lower, ",reject") {
+		return policy.UDPRule{}, false
+	}
+	if !strings.Contains(lower, "(protocol,udp)") {
+		return policy.UDPRule{}, false
+	}
+
+	if m := regexp.MustCompile(`(?i)\(domain-suffix\s*,\s*([^)]+)\)`).FindStringSubmatch(raw); len(m) == 2 {
+		return policy.UDPRule{
+			DomainSuffix: strings.TrimSpace(m[1]),
+			Raw:          raw,
+		}, true
+	}
+	if m := regexp.MustCompile(`(?i)\(domain\s*,\s*([^)]+)\)`).FindStringSubmatch(raw); len(m) == 2 {
+		return policy.UDPRule{
+			Domain: strings.TrimSpace(m[1]),
+			Raw:    raw,
+		}, true
+	}
+	return policy.UDPRule{}, false
 }
 
 func parseArgumentsDefinition(v string) map[string]string {

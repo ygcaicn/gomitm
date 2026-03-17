@@ -106,6 +106,7 @@ func runServe(args []string) error {
 	hosts := append([]string{}, opts.MITMHosts...)
 	rewriteRules := []policy.RewriteRule{}
 	scriptRules := []policy.ScriptRule{}
+	udpRules := []policy.UDPRule{}
 
 	parsedModule, err := module.LoadSources(opts.ModuleSources)
 	if err != nil {
@@ -116,8 +117,9 @@ func runServe(args []string) error {
 		hosts = dedupStrings(hosts)
 		rewriteRules = append(rewriteRules, parsedModule.Rewrite...)
 		scriptRules = append(scriptRules, parsedModule.Scripts...)
+		udpRules = append(udpRules, parsedModule.UDPRules...)
 	}
-	log.Printf("policy loaded: mitm_hosts=%d rewrite_rules=%d scripts=%d", len(hosts), len(rewriteRules), len(scriptRules))
+	log.Printf("policy loaded: mitm_hosts=%d rewrite_rules=%d scripts=%d udp_rules=%d", len(hosts), len(rewriteRules), len(scriptRules), len(udpRules))
 	log.Printf("capture config: enabled=%v max_entries=%d max_body_bytes=%d har_out=%q", opts.CaptureEnabled, opts.CaptureMaxEntries, opts.CaptureMaxBodyBytes, opts.HAROut)
 
 	srv := server.New(server.Config{
@@ -127,6 +129,7 @@ func runServe(args []string) error {
 		MITMAll:     opts.MITMAll,
 		Rewrite:     rewriteRules,
 		Scripts:     scriptRules,
+		UDPRules:    udpRules,
 		Capture: capture.Config{
 			Enabled:      opts.CaptureEnabled,
 			MaxEntries:   opts.CaptureMaxEntries,
