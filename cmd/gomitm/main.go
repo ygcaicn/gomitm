@@ -42,6 +42,7 @@ type serveOptions struct {
 	DialTimeout time.Duration
 
 	MITMHosts []string
+	MITMAll   bool
 
 	ModuleSources []module.Source
 
@@ -123,6 +124,7 @@ func runServe(args []string) error {
 		ListenAddr:  opts.Listen,
 		DialTimeout: opts.DialTimeout,
 		MITMHosts:   hosts,
+		MITMAll:     opts.MITMAll,
 		Rewrite:     rewriteRules,
 		Scripts:     scriptRules,
 		Capture: capture.Config{
@@ -178,6 +180,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	listen := fs.String("listen", "", "SOCKS5 listen address")
 	caDir := fs.String("ca-dir", "", "CA storage directory")
 	mitmHosts := fs.String("mitm-hosts", "", "comma-separated MITM hosts, e.g. *.googlevideo.com,youtubei.googleapis.com")
+	mitmAll := fs.Bool("mitm-all", false, "MITM all HTTPS hosts on port 443")
 	moduleURLs := fs.String("module-urls", "", "comma-separated sgmodule URLs")
 	moduleFiles := fs.String("module-files", "", "comma-separated local sgmodule file paths")
 	moduleArgs := fs.String("module-args", "", "module argument overrides, e.g. key1=value1,key2=true")
@@ -220,6 +223,9 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	}
 	if visited["mitm-hosts"] {
 		opts.MITMHosts = splitCommaList(*mitmHosts)
+	}
+	if visited["mitm-all"] {
+		opts.MITMAll = *mitmAll
 	}
 	cliModuleArgs := map[string]string{}
 	if visited["module-args"] {
@@ -319,6 +325,7 @@ func applyConfigFile(opts *serveOptions, cfg *config.File) error {
 	}
 
 	opts.MITMHosts = append([]string{}, cfg.MITM.Hosts...)
+	opts.MITMAll = cfg.MITM.All
 	opts.ModuleSources = nil
 	for _, m := range cfg.Modules {
 		enabled := true
@@ -494,6 +501,7 @@ Usage:
 
 Examples:
   gomitm serve --listen :1080 --mitm-hosts "*.googlevideo.com,youtubei.googleapis.com"
+  gomitm serve --listen :1080 --mitm-all
   gomitm serve --listen :1080 --module-urls "https://example.com/YouTubeNoAd.sgmodule"
   gomitm serve --config ./config.yaml
   gomitm ca init --ca-dir ~/.gomitm/ca

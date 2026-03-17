@@ -5,6 +5,7 @@ serve:
   dial_timeout: "10s"
 
 mitm:
+  all: false
   hosts:
     - "*.googlevideo.com"
     - "youtubei.googleapis.com"
@@ -16,7 +17,7 @@ modules:
     arguments:
       文案: "今天也要快乐摸鱼"
   - name: YouTubeNoAds
-    enable: false
+    enable: true
     path: "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
     arguments:
       字幕翻译语言: "off"

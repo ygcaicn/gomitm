@@ -14,6 +14,7 @@ serve:
   listen: ":2080"
   dial_timeout: "12s"
 mitm:
+  all: false
   hosts: ["a.com"]
 modules:
   - name: one
@@ -56,6 +57,9 @@ capture:
 	if len(opts.MITMHosts) != 1 || opts.MITMHosts[0] != "a.com" {
 		t.Fatalf("mitm hosts=%v", opts.MITMHosts)
 	}
+	if opts.MITMAll {
+		t.Fatal("mitm all should be false from config")
+	}
 	if len(opts.ModuleSources) != 1 {
 		t.Fatalf("module sources len got=%d want=1", len(opts.ModuleSources))
 	}
@@ -64,6 +68,30 @@ capture:
 	}
 	if opts.ModuleSources[0].Arguments["屏蔽上传按钮"] != "true" {
 		t.Fatalf("module arg got=%q", opts.ModuleSources[0].Arguments["屏蔽上传按钮"])
+	}
+}
+
+func TestParseServeOptionsMITMAllCLIOverride(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	content := `
+mitm:
+  all: false
+  hosts: ["a.com"]
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts, err := parseServeOptions([]string{
+		"--config", cfgPath,
+		"--mitm-all=true",
+	})
+	if err != nil {
+		t.Fatalf("parseServeOptions failed: %v", err)
+	}
+	if !opts.MITMAll {
+		t.Fatal("mitm all should be true after cli override")
 	}
 }
 

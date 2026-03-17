@@ -50,6 +50,7 @@ type Config struct {
 	ListenAddr  string
 	DialTimeout time.Duration
 	MITMHosts   []string
+	MITMAll     bool
 	Rewrite     []policy.RewriteRule
 	Scripts     []policy.ScriptRule
 	Capture     capture.Config
@@ -208,6 +209,9 @@ func (s *Server) handleConn(client net.Conn) {
 func (s *Server) shouldMITM(host string, port int) bool {
 	if port != 443 {
 		return false
+	}
+	if s.cfg.MITMAll {
+		return true
 	}
 	host = normalizeHost(host)
 	if host == builtinCAHost {

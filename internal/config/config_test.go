@@ -16,6 +16,7 @@ serve:
   ca_dir: "~/.gomitm/ca"
   dial_timeout: "12s"
 mitm:
+  all: true
   hosts:
     - "*.googlevideo.com"
 modules:
@@ -50,6 +51,9 @@ capture:
 	}
 	if cfg.Capture.MaxEntries != 123 {
 		t.Fatalf("max_entries got=%d", cfg.Capture.MaxEntries)
+	}
+	if !cfg.MITM.All {
+		t.Fatal("mitm.all should be true")
 	}
 	if len(cfg.Modules) != 2 {
 		t.Fatalf("modules len got=%d", len(cfg.Modules))

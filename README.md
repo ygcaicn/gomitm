@@ -9,6 +9,7 @@
 - SOCKS5 入口（`NO AUTH` + `CONNECT`）
 - 非命中域名走 TCP 透传
 - 命中域名（`--mitm-hosts`）走 HTTPS MITM（HTTP/1.1）
+- 支持 `--mitm-all` / `mitm.all: true` 对全部 `443` 主机启用 MITM
 - 首次启动自动生成 Root CA
 - 支持导出 CA 证书供客户端安装
 - 支持加载 Surge-like 模块子集：
@@ -26,6 +27,7 @@ gomitm ca init --ca-dir ~/.gomitm/ca
 gomitm ca export --ca-dir ~/.gomitm/ca --out ./gomitm-ca.crt
 gomitm serve --config ./config.example.yaml
 gomitm serve --listen :1080 --mitm-hosts "*.googlevideo.com,youtubei.googleapis.com"
+gomitm serve --listen :1080 --mitm-all
 gomitm serve --listen :1080 --admin-listen 127.0.0.1:19090 --capture-enabled
 ```
 
@@ -65,6 +67,9 @@ go run ./cmd/gomitm serve --config ./config.example.yaml
 
 # 配置文件 + 命令行覆盖（命令行优先）
 go run ./cmd/gomitm serve --config ./config.example.yaml --listen :2080 --capture-enabled=false
+
+# 全量 MITM（仅限 443）
+go run ./cmd/gomitm serve --listen :1080 --mitm-all
 
 # 仅临时追加远程模块（用于快速调试，配置文件仍然是主入口）
 go run ./cmd/gomitm serve --config ./config.example.yaml \

@@ -86,6 +86,16 @@ func TestShouldMITMBuiltinHost(t *testing.T) {
 	}
 }
 
+func TestShouldMITMAll(t *testing.T) {
+	s := &Server{cfg: Config{MITMAll: true}, matcher: nil}
+	if !s.shouldMITM("example.com", 443) {
+		t.Fatal("mitm all should force mitm on 443")
+	}
+	if s.shouldMITM("example.com", 80) {
+		t.Fatal("mitm all should not force non-443 ports")
+	}
+}
+
 func TestHandleBuiltinCAPortal(t *testing.T) {
 	dir := t.TempDir()
 	caManager, err := ca.Init(dir)

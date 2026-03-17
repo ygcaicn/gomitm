@@ -22,6 +22,7 @@ type Serve struct {
 }
 
 type MITM struct {
+	All   bool     `yaml:"all"`
 	Hosts []string `yaml:"hosts"`
 }
 
