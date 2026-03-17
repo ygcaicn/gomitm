@@ -25,6 +25,7 @@ gomitm ca init --ca-dir ~/.gomitm/ca
 gomitm ca export --ca-dir ~/.gomitm/ca --out ./gomitm-ca.crt
 gomitm serve --listen :1080 --mitm-hosts "*.googlevideo.com,youtubei.googleapis.com"
 gomitm serve --listen :1080 --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
+gomitm serve --listen :1080 --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" --module-args "字幕翻译语言=ja,歌词翻译语言=ko,启用调试模式=true"
 gomitm serve --listen :1080 --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" --capture-enabled --har-out ./tmp/session.har
 ```
 

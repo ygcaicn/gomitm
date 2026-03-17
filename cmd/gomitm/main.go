@@ -52,6 +52,7 @@ func runServe(args []string) error {
 	mitmHosts := fs.String("mitm-hosts", "", "comma-separated MITM hosts, e.g. *.googlevideo.com,youtubei.googleapis.com")
 	moduleURLs := fs.String("module-urls", "", "comma-separated sgmodule URLs")
 	moduleFiles := fs.String("module-files", "", "comma-separated local sgmodule file paths")
+	moduleArgs := fs.String("module-args", "", "module argument overrides, e.g. key1=value1,key2=true")
 	dialTimeout := fs.Duration("dial-timeout", 10*time.Second, "upstream dial timeout")
 	captureEnabled := fs.Bool("capture-enabled", false, "enable MITM HTTP capture")
 	captureMaxEntries := fs.Int("capture-max-entries", 1000, "max in-memory capture entries")
@@ -74,7 +75,11 @@ func runServe(args []string) error {
 	rewriteRules := []policy.RewriteRule{}
 	scriptRules := []policy.ScriptRule{}
 
-	parsedModule, err := module.LoadAll(splitCommaList(*moduleURLs), splitCommaList(*moduleFiles))
+	parsedModule, err := module.LoadAllWithArgs(
+		splitCommaList(*moduleURLs),
+		splitCommaList(*moduleFiles),
+		module.ParseModuleArgs(*moduleArgs),
+	)
 	if err != nil {
 		return err
 	}

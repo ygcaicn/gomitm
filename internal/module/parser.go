@@ -23,6 +23,10 @@ type Parsed struct {
 }
 
 func LoadAll(urls []string, files []string) (*Parsed, error) {
+	return LoadAllWithArgs(urls, files, nil)
+}
+
+func LoadAllWithArgs(urls []string, files []string, args map[string]string) (*Parsed, error) {
 	combined := &Parsed{}
 
 	for _, u := range urls {
@@ -30,7 +34,7 @@ func LoadAll(urls []string, files []string) (*Parsed, error) {
 		if u == "" {
 			continue
 		}
-		m, err := LoadFromURL(u)
+		m, err := LoadFromURLWithArgs(u, args)
 		if err != nil {
 			return nil, err
 		}
@@ -42,7 +46,7 @@ func LoadAll(urls []string, files []string) (*Parsed, error) {
 		if f == "" {
 			continue
 		}
-		m, err := LoadFromFile(f)
+		m, err := LoadFromFileWithArgs(f, args)
 		if err != nil {
 			return nil, err
 		}
@@ -57,6 +61,10 @@ func LoadAll(urls []string, files []string) (*Parsed, error) {
 }
 
 func LoadFromURL(u string) (*Parsed, error) {
+	return LoadFromURLWithArgs(u, nil)
+}
+
+func LoadFromURLWithArgs(u string, args map[string]string) (*Parsed, error) {
 	if !strings.HasPrefix(strings.ToLower(u), "http://") && !strings.HasPrefix(strings.ToLower(u), "https://") {
 		return nil, fmt.Errorf("module url must start with http/https: %s", u)
 	}
@@ -69,7 +77,7 @@ func LoadFromURL(u string) (*Parsed, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch module %s: status %d", u, resp.StatusCode)
 	}
-	p, err := Parse(resp.Body)
+	p, err := ParseWithArgs(resp.Body, args)
 	if err != nil {
 		return nil, fmt.Errorf("parse module %s: %w", u, err)
 	}
@@ -77,12 +85,16 @@ func LoadFromURL(u string) (*Parsed, error) {
 }
 
 func LoadFromFile(path string) (*Parsed, error) {
+	return LoadFromFileWithArgs(path, nil)
+}
+
+func LoadFromFileWithArgs(path string, args map[string]string) (*Parsed, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open module file %s: %w", path, err)
 	}
 	defer f.Close()
-	p, err := Parse(f)
+	p, err := ParseWithArgs(f, args)
 	if err != nil {
 		return nil, fmt.Errorf("parse module file %s: %w", path, err)
 	}
@@ -90,6 +102,10 @@ func LoadFromFile(path string) (*Parsed, error) {
 }
 
 func Parse(r io.Reader) (*Parsed, error) {
+	return ParseWithArgs(r, nil)
+}
+
+func ParseWithArgs(r io.Reader, args map[string]string) (*Parsed, error) {
 	if r == nil {
 		return nil, errors.New("nil reader")
 	}
@@ -99,11 +115,26 @@ func Parse(r io.Reader) (*Parsed, error) {
 	s.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	section := ""
+	defaultArgs := map[string]string{}
+	overrideArgs := args
 	for s.Scan() {
-		line := strings.TrimSpace(s.Text())
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+		raw := strings.TrimSpace(s.Text())
+		if raw == "" || strings.HasPrefix(raw, ";") {
 			continue
 		}
+
+		if strings.HasPrefix(raw, "#!arguments=") {
+			meta := strings.TrimSpace(strings.TrimPrefix(raw, "#!arguments="))
+			for k, v := range parseArgumentsDefinition(meta) {
+				defaultArgs[k] = v
+			}
+			continue
+		}
+		if strings.HasPrefix(raw, "#") {
+			continue
+		}
+
+		line := substituteArgs(raw, mergeArgs(defaultArgs, overrideArgs))
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			section = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
 			continue
@@ -131,6 +162,10 @@ func Parse(r io.Reader) (*Parsed, error) {
 
 	out.DedupHosts()
 	return out, nil
+}
+
+func ParseModuleArgs(v string) map[string]string {
+	return parseModuleArgs(v)
 }
 
 func (p *Parsed) Merge(other *Parsed) {
@@ -221,6 +256,64 @@ func parseRewriteLine(line string) (policy.RewriteRule, bool) {
 		return policy.RewriteRule{}, false
 	}
 	return policy.RewriteRule{Pattern: re, Action: action, Raw: line}, true
+}
+
+func parseArgumentsDefinition(v string) map[string]string {
+	out := make(map[string]string)
+	for _, part := range splitTopLevelCSV(v) {
+		k, val, ok := strings.Cut(part, ":")
+		if !ok {
+			continue
+		}
+		key := strings.TrimSpace(k)
+		value := strings.TrimSpace(val)
+		if key != "" {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func parseModuleArgs(v string) map[string]string {
+	out := make(map[string]string)
+	for _, part := range splitTopLevelCSV(v) {
+		k, val, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		key := strings.TrimSpace(k)
+		value := strings.TrimSpace(val)
+		if key != "" {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func mergeArgs(defaults, overrides map[string]string) map[string]string {
+	if len(defaults) == 0 && len(overrides) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(defaults)+len(overrides))
+	for k, v := range defaults {
+		out[k] = v
+	}
+	for k, v := range overrides {
+		out[k] = v
+	}
+	return out
+}
+
+func substituteArgs(line string, args map[string]string) string {
+	if len(args) == 0 || line == "" {
+		return line
+	}
+	out := line
+	for k, v := range args {
+		token := "{{{" + k + "}}}"
+		out = strings.ReplaceAll(out, token, v)
+	}
+	return out
 }
 
 func parseScriptLine(line string) (policy.ScriptRule, bool) {
