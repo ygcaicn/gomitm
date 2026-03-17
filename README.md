@@ -65,6 +65,15 @@ go run ./cmd/gomitm serve --listen :1080 \
 go build -o ./gomitm ./cmd/gomitm
 ```
 
+## CI / Release
+
+- CI 文件：`.gitea/workflows/ci.yml`
+- 触发规则：
+  - `push main` / `pull_request main`：自动执行 `go test ./...`，并做一次构建冒烟检查
+  - `push tag v*`：自动交叉编译（`linux/darwin/windows` 的 `amd64/arm64`）并发布到 Gitea Release
+- 需要在仓库 Secrets 中配置：
+  - `TOKEN`：具备仓库 release 写权限的 token（用于上传发布资产）
+
 ## 说明
 
 - MITM 目前仅在域名命中且端口为 `443` 时触发。
