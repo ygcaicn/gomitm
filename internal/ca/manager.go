@@ -134,6 +134,15 @@ func (m *Manager) ExportCert(outPath string) error {
 	return nil
 }
 
+func (m *Manager) RootCertPEM() []byte {
+	if m == nil || len(m.certPEM) == 0 {
+		return nil
+	}
+	out := make([]byte, len(m.certPEM))
+	copy(out, m.certPEM)
+	return out
+}
+
 func (m *Manager) GetLeafCertificate(host string) (tls.Certificate, error) {
 	host = strings.TrimSpace(strings.ToLower(host))
 	if host == "" {

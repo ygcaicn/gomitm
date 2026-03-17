@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net"
@@ -40,6 +41,9 @@ const (
 	repHostUnreachable    = 0x04
 	repCmdNotSupported    = 0x07
 	repAddrTypeNotSupport = 0x08
+
+	builtinCAHost     = "www4.google.com"
+	builtinCACertPath = "/gomitm-ca.crt"
 )
 
 type Config struct {
@@ -169,7 +173,7 @@ func (s *Server) handleConn(client net.Conn) {
 	}
 
 	target := net.JoinHostPort(host, strconv.Itoa(port))
-	useMITM := port == 443 && s.matcher.Match(host)
+	useMITM := s.shouldMITM(host, port)
 
 	if useMITM {
 		if err := writeReply(client, repSucceeded, nil, 0); err != nil {
@@ -199,6 +203,17 @@ func (s *Server) handleConn(client net.Conn) {
 
 	s.logger.Printf("TCP %s", target)
 	proxyTCP(client, upstream)
+}
+
+func (s *Server) shouldMITM(host string, port int) bool {
+	if port != 443 {
+		return false
+	}
+	host = normalizeHost(host)
+	if host == builtinCAHost {
+		return true
+	}
+	return s.matcher.Match(host)
 }
 
 func (s *Server) handleGreeting(conn net.Conn) error {
@@ -346,6 +361,22 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 		}
 		started := time.Now()
 
+		if handled, builtinResp, err := s.handleBuiltinCAPortal(req, writer); err != nil {
+			if req.Body != nil {
+				_ = req.Body.Close()
+			}
+			return err
+		} else if handled {
+			s.captureTransaction(req, builtinResp, started, "builtin-ca-portal", "")
+			if req.Body != nil {
+				_ = req.Body.Close()
+			}
+			if req.Close {
+				return nil
+			}
+			continue
+		}
+
 		if handled, rewriteResp, rewriteRule, err := s.applyRewrite(req, writer); err != nil {
 			if req.Body != nil {
 				_ = req.Body.Close()
@@ -423,6 +454,92 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 			return nil
 		}
 	}
+}
+
+func (s *Server) handleBuiltinCAPortal(req *http.Request, writer *bufio.Writer) (bool, *http.Response, error) {
+	if req == nil || writer == nil || s.ca == nil {
+		return false, nil, nil
+	}
+	if normalizeHost(req.Host) != builtinCAHost {
+		return false, nil, nil
+	}
+
+	path := "/"
+	if req.URL != nil && strings.TrimSpace(req.URL.Path) != "" {
+		path = req.URL.Path
+	}
+	if path != "/" && path != "/index.html" && path != builtinCACertPath {
+		return false, nil, nil
+	}
+
+	cert := s.ca.RootCertPEM()
+	if len(cert) == 0 {
+		return true, nil, writeHTTPError(writer, req, http.StatusInternalServerError, "ca certificate is unavailable")
+	}
+
+	if path == builtinCACertPath {
+		resp := &http.Response{
+			StatusCode:    http.StatusOK,
+			Proto:         "HTTP/1.1",
+			ProtoMajor:    1,
+			ProtoMinor:    1,
+			Header:        make(http.Header),
+			Body:          io.NopCloser(strings.NewReader(string(cert))),
+			ContentLength: int64(len(cert)),
+			Request:       req,
+		}
+		resp.Header.Set("Content-Type", "application/x-x509-ca-cert; charset=utf-8")
+		resp.Header.Set("Content-Disposition", `attachment; filename="gomitm-root-ca.crt"`)
+		if err := writeHTTPResponse(writer, resp); err != nil {
+			return true, nil, fmt.Errorf("write built-in ca cert response: %w", err)
+		}
+		return true, resp, nil
+	}
+
+	htmlBody := buildBuiltinCAPortalPage(string(cert))
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        make(http.Header),
+		Body:          io.NopCloser(strings.NewReader(htmlBody)),
+		ContentLength: int64(len(htmlBody)),
+		Request:       req,
+	}
+	resp.Header.Set("Content-Type", "text/html; charset=utf-8")
+	if err := writeHTTPResponse(writer, resp); err != nil {
+		return true, nil, fmt.Errorf("write built-in ca portal response: %w", err)
+	}
+	return true, resp, nil
+}
+
+func buildBuiltinCAPortalPage(certPEM string) string {
+	escapedCert := html.EscapeString(certPEM)
+	return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GoMITM CA 下载页</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #111; }
+    .card { max-width: 900px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; }
+    h1 { margin: 0 0 12px; }
+    a.button { display: inline-block; background: #0b57d0; color: #fff; text-decoration: none; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; }
+    pre { background: #f6f8fa; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+    .tip { color: #444; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>GoMITM 根证书安装页</h1>
+    <p class="tip">你当前访问的是内置 MITM 页面。点击按钮可直接下载根证书，也可手动复制下方 PEM 内容。</p>
+    <a class="button" href="` + builtinCACertPath + `">下载 CA 证书 (gomitm-root-ca.crt)</a>
+    <pre>` + escapedCert + `</pre>
+  </div>
+</body>
+</html>`
 }
 
 func (s *Server) applyRewrite(req *http.Request, writer *bufio.Writer) (bool, *http.Response, string, error) {
@@ -610,6 +727,17 @@ func writeHTTPResponse(w *bufio.Writer, resp *http.Response) error {
 		return err
 	}
 	return w.Flush()
+}
+
+func normalizeHost(host string) string {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "" {
+		return ""
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.TrimSuffix(host, ".")
 }
 
 func removeHopByHopHeaders(h http.Header) {
