@@ -31,6 +31,40 @@ gomitm serve --listen :1080 --module-urls "https://raw.githubusercontent.com/iab
 
 将客户端代理设置为 SOCKS5 `127.0.0.1:1080`，并安装 `gomitm-ca.crt` 为受信任根证书。
 
+## 开发启动（Dev）
+
+```bash
+# 1) 拉依赖
+go mod tidy
+
+# 2) 运行测试
+go test ./...
+
+# 3) 直接开发态启动（无需先 build）
+go run ./cmd/gomitm serve --listen :1080
+```
+
+常用开发命令：
+
+```bash
+# 带远程模块启动
+go run ./cmd/gomitm serve --listen :1080 \
+  --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule"
+
+# 带模块参数覆盖
+go run ./cmd/gomitm serve --listen :1080 \
+  --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" \
+  --module-args "字幕翻译语言=ja,歌词翻译语言=ko,启用调试模式=true"
+
+# 开启抓包并在退出时导出 HAR
+go run ./cmd/gomitm serve --listen :1080 \
+  --module-urls "https://raw.githubusercontent.com/iab0x00/ProxyRules/refs/heads/main/Rewrite/YouTubeNoAd.sgmodule" \
+  --capture-enabled --har-out ./tmp/session.har
+
+# 构建二进制
+go build -o ./gomitm ./cmd/gomitm
+```
+
 ## 说明
 
 - MITM 目前仅在域名命中且端口为 `443` 时触发。
