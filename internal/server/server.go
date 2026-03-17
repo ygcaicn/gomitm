@@ -44,6 +44,7 @@ const (
 
 	builtinCAHostHTTPS = "www4.google.com"
 	builtinCAHostHTTP  = "198.18.0.1"
+	builtinCAHostHTTP2 = "8.8.9.9"
 	builtinCACertPath  = "/gomitm-ca.crt"
 )
 
@@ -885,7 +886,7 @@ func normalizeHost(host string) string {
 
 func isBuiltinCAPortalHost(host string) bool {
 	host = normalizeHost(host)
-	return host == builtinCAHostHTTPS || host == builtinCAHostHTTP
+	return host == builtinCAHostHTTPS || host == builtinCAHostHTTP || host == builtinCAHostHTTP2
 }
 
 func removeHopByHopHeaders(h http.Header) {

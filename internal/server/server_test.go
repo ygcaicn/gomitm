@@ -130,6 +130,9 @@ func TestShouldMITMBuiltinHost(t *testing.T) {
 	if !s.shouldMITM("198.18.0.1", 443) {
 		t.Fatal("builtin HTTP portal host should also be MITM on 443")
 	}
+	if !s.shouldMITM("8.8.9.9", 443) {
+		t.Fatal("builtin HTTP portal alt host should also be MITM on 443")
+	}
 	if s.shouldMITM("www4.google.com", 80) {
 		t.Fatal("builtin host on non-443 should not be MITM")
 	}
@@ -224,6 +227,22 @@ func TestHandleBuiltinCAPortal(t *testing.T) {
 			t.Fatal("expected builtin host unknown path still handled with 404")
 		}
 		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status code got=%d", resp.StatusCode)
+		}
+	}
+
+	{
+		req, _ := http.NewRequest(http.MethodGet, "http://8.8.9.9/", nil)
+		buf := new(bytes.Buffer)
+		w := bufio.NewWriter(buf)
+		handled, resp, err := s.handleBuiltinCAPortal(req, w, "8.8.9.9")
+		if err != nil {
+			t.Fatalf("handle http alt root failed: %v", err)
+		}
+		if !handled || resp == nil {
+			t.Fatal("expected builtin alt host handled")
+		}
+		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status code got=%d", resp.StatusCode)
 		}
 	}
