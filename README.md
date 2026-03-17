@@ -1,5 +1,15 @@
 # gomitm
 
+> 一句话：用 Go 构建的高性能 SOCKS5 MITM 代理，开箱即用支持根证书下载页、模块化脚本和 HAR 导出。
+
+![GoMITM 根证书安装页截图](./docs/images/gomitm-ca-install-page.png)
+
+## 为什么值得转发
+
+- 5 分钟跑通：启动后直接访问 `http://8.8.9.9/` 下载并安装 CA
+- 兼顾调试与分析：实时抓包 + HAR 导出，且保留上游原始响应与最终响应
+- 规则迁移成本低：支持 Surge-like 模块子集（MITM / URL Rewrite / Script）
+
 `gomitm` 是一个面向类 Unix 系统的高性能 SOCKS5 MITM 代理，目标是把“路由能力 + HTTPS 解密 + 模块化脚本处理 + 抓包导出”整合到一个可扩展的 Go 工具里。
 
 项目现阶段聚焦：
