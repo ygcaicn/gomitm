@@ -4,8 +4,10 @@ import (
 	"errors"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExpandHomeWithEnvHOME(t *testing.T) {
@@ -80,5 +82,39 @@ func TestExpandHomeErrorWhenNoSource(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "get home dir") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestInitRootCACommonNameIncludesIssueDate(t *testing.T) {
+	m, err := Init(t.TempDir())
+	if err != nil {
+		t.Fatalf("init ca failed: %v", err)
+	}
+
+	cn := strings.TrimSpace(m.rootCert.Subject.CommonName)
+	prefix := rootCACommonNamePrefix + " "
+	if !strings.HasPrefix(cn, prefix) {
+		t.Fatalf("common name should start with %q, got=%q", prefix, cn)
+	}
+	issuedDate := strings.TrimPrefix(cn, prefix)
+	if _, err := time.Parse(rootCertDateLayout, issuedDate); err != nil {
+		t.Fatalf("common name date format invalid, got=%q err=%v", issuedDate, err)
+	}
+}
+
+func TestRootCertDownloadFilenameIncludesIssueDate(t *testing.T) {
+	m, err := Init(t.TempDir())
+	if err != nil {
+		t.Fatalf("init ca failed: %v", err)
+	}
+
+	name := m.RootCertDownloadFilename()
+	if !regexp.MustCompile(`^gomitm-root-ca-\d{8}\.crt$`).MatchString(name) {
+		t.Fatalf("unexpected download filename: %q", name)
+	}
+
+	cnDate := strings.TrimPrefix(m.rootCert.Subject.CommonName, rootCACommonNamePrefix+" ")
+	if !strings.Contains(name, cnDate) {
+		t.Fatalf("download filename should include issue date from common name, name=%q cn=%q", name, m.rootCert.Subject.CommonName)
 	}
 }

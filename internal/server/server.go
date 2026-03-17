@@ -545,6 +545,7 @@ func (s *Server) handleBuiltinCAPortal(req *http.Request, writer *bufio.Writer, 
 	}
 
 	if path == builtinCACertPath {
+		downloadName := s.ca.RootCertDownloadFilename()
 		resp := &http.Response{
 			StatusCode:    http.StatusOK,
 			Proto:         "HTTP/1.1",
@@ -556,7 +557,7 @@ func (s *Server) handleBuiltinCAPortal(req *http.Request, writer *bufio.Writer, 
 			Request:       req,
 		}
 		resp.Header.Set("Content-Type", "application/x-x509-ca-cert; charset=utf-8")
-		resp.Header.Set("Content-Disposition", `attachment; filename="gomitm-root-ca.crt"`)
+		resp.Header.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, downloadName))
 		if err := writeHTTPResponse(writer, resp); err != nil {
 			return true, nil, fmt.Errorf("write built-in ca cert response: %w", err)
 		}
@@ -571,7 +572,7 @@ func (s *Server) handleBuiltinCAPortal(req *http.Request, writer *bufio.Writer, 
 		return true, resp, nil
 	}
 
-	htmlBody := buildBuiltinCAPortalPage(string(cert))
+	htmlBody := buildBuiltinCAPortalPage(string(cert), s.ca.RootCertDownloadFilename())
 	resp := &http.Response{
 		StatusCode:    http.StatusOK,
 		Proto:         "HTTP/1.1",
@@ -589,7 +590,7 @@ func (s *Server) handleBuiltinCAPortal(req *http.Request, writer *bufio.Writer, 
 	return true, resp, nil
 }
 
-func buildBuiltinCAPortalPage(certPEM string) string {
+func buildBuiltinCAPortalPage(certPEM, downloadName string) string {
 	escapedCert := html.EscapeString(certPEM)
 	return `<!doctype html>
 <html lang="zh-CN">
@@ -610,7 +611,7 @@ func buildBuiltinCAPortalPage(certPEM string) string {
   <div class="card">
     <h1>GoMITM 根证书安装页</h1>
     <p class="tip">你当前访问的是内置 MITM 页面。点击按钮可直接下载根证书，也可手动复制下方 PEM 内容。</p>
-    <a class="button" href="` + builtinCACertPath + `">下载 CA 证书 (gomitm-root-ca.crt)</a>
+    <a class="button" href="` + builtinCACertPath + `">下载 CA 证书 (` + html.EscapeString(downloadName) + `)</a>
     <pre>` + escapedCert + `</pre>
   </div>
 </body>

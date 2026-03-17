@@ -26,6 +26,9 @@ import (
 const (
 	RootCertFile = "root_ca.crt"
 	RootKeyFile  = "root_ca.key"
+
+	rootCACommonNamePrefix = "GoMITM Root CA"
+	rootCertDateLayout     = "20060102"
 )
 
 type Manager struct {
@@ -145,6 +148,45 @@ func (m *Manager) RootCertPEM() []byte {
 	return out
 }
 
+func (m *Manager) RootCertDownloadFilename() string {
+	return fmt.Sprintf("gomitm-root-ca-%s.crt", m.rootCertIssueDate())
+}
+
+func (m *Manager) rootCertIssueDate() string {
+	if m != nil {
+		if d := issuedDateFromCommonName(m.rootCommonName()); d != "" {
+			return d
+		}
+		if m.rootCert != nil {
+			return m.rootCert.NotBefore.Format(rootCertDateLayout)
+		}
+	}
+	return time.Now().Format(rootCertDateLayout)
+}
+
+func (m *Manager) rootCommonName() string {
+	if m == nil || m.rootCert == nil {
+		return ""
+	}
+	return strings.TrimSpace(m.rootCert.Subject.CommonName)
+}
+
+func issuedDateFromCommonName(commonName string) string {
+	prefix := rootCACommonNamePrefix + " "
+	if !strings.HasPrefix(commonName, prefix) {
+		return ""
+	}
+	date := strings.TrimPrefix(commonName, prefix)
+	if _, err := time.Parse(rootCertDateLayout, date); err != nil {
+		return ""
+	}
+	return date
+}
+
+func rootCACommonName(now time.Time) string {
+	return fmt.Sprintf("%s %s", rootCACommonNamePrefix, now.Format(rootCertDateLayout))
+}
+
 func (m *Manager) GetLeafCertificate(host string) (tls.Certificate, error) {
 	host = strings.TrimSpace(strings.ToLower(host))
 	if host == "" {
@@ -239,7 +281,7 @@ func initCA(dir string) (*Manager, error) {
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName:   "GoMITM Root CA",
+			CommonName:   rootCACommonName(now),
 			Organization: []string{"GoMITM"},
 		},
 		NotBefore:             now.Add(-1 * time.Hour),
