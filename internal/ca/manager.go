@@ -15,7 +15,9 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -304,11 +306,17 @@ func parsePrivateKey(der []byte) (any, error) {
 	return nil, errors.New("unsupported private key format")
 }
 
+var (
+	lookupCurrentUser = user.Current
+	lookupUserByID    = user.LookupId
+	currentUID        = os.Getuid
+)
+
 func expandHome(path string) (string, error) {
 	if path == "" || path[0] != '~' {
 		return path, nil
 	}
-	home, err := os.UserHomeDir()
+	home, err := resolveHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("get home dir: %w", err)
 	}
@@ -319,6 +327,24 @@ func expandHome(path string) (string, error) {
 		return filepath.Join(home, path[2:]), nil
 	}
 	return "", fmt.Errorf("unsupported home path: %s", path)
+}
+
+func resolveHomeDir() (string, error) {
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home != "" {
+		return home, nil
+	}
+
+	if u, err := lookupCurrentUser(); err == nil && strings.TrimSpace(u.HomeDir) != "" {
+		return u.HomeDir, nil
+	}
+
+	uid := strconv.Itoa(currentUID())
+	if u, err := lookupUserByID(uid); err == nil && strings.TrimSpace(u.HomeDir) != "" {
+		return u.HomeDir, nil
+	}
+
+	return "", errors.New("$HOME is not defined and user home lookup failed")
 }
 
 func ensurePrivateKeyPermissions(path string) error {
