@@ -23,7 +23,7 @@ func TestApplyRewriteReject200(t *testing.T) {
 	buf := new(bytes.Buffer)
 	w := bufio.NewWriter(buf)
 
-	handled, err := s.applyRewrite(req, w)
+	handled, _, _, err := s.applyRewrite(req, w)
 	if err != nil {
 		t.Fatalf("apply rewrite failed: %v", err)
 	}
@@ -32,5 +32,25 @@ func TestApplyRewriteReject200(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "200 OK") {
 		t.Fatalf("unexpected response: %s", buf.String())
+	}
+}
+
+func TestShouldCaptureContentType(t *testing.T) {
+	cases := []struct {
+		contentType string
+		filters     []string
+		want        bool
+	}{
+		{"application/json", []string{"application/json", "text/*"}, true},
+		{"text/plain; charset=utf-8", []string{"application/json", "text/*"}, true},
+		{"application/octet-stream", []string{"application/json", "text/*"}, false},
+		{"application/octet-stream", nil, true},
+	}
+
+	for _, c := range cases {
+		got := shouldCaptureContentType(c.contentType, c.filters)
+		if got != c.want {
+			t.Fatalf("contentType=%q filters=%v got=%v want=%v", c.contentType, c.filters, got, c.want)
+		}
 	}
 }

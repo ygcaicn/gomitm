@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"gomitm/internal/ca"
+	"gomitm/internal/capture"
+	"gomitm/internal/har"
 	"gomitm/internal/module"
 	"gomitm/internal/policy"
 	"gomitm/internal/server"
@@ -51,6 +53,11 @@ func runServe(args []string) error {
 	moduleURLs := fs.String("module-urls", "", "comma-separated sgmodule URLs")
 	moduleFiles := fs.String("module-files", "", "comma-separated local sgmodule file paths")
 	dialTimeout := fs.Duration("dial-timeout", 10*time.Second, "upstream dial timeout")
+	captureEnabled := fs.Bool("capture-enabled", false, "enable MITM HTTP capture")
+	captureMaxEntries := fs.Int("capture-max-entries", 1000, "max in-memory capture entries")
+	captureMaxBodyBytes := fs.Int64("capture-max-body-bytes", 2*1024*1024, "max captured response body size in bytes")
+	captureTypes := fs.String("capture-content-types", "application/json,text/*", "comma-separated content-type filters")
+	harOut := fs.String("har-out", "", "export captured entries to HAR file on exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -78,6 +85,7 @@ func runServe(args []string) error {
 		scriptRules = append(scriptRules, parsedModule.Scripts...)
 	}
 	log.Printf("policy loaded: mitm_hosts=%d rewrite_rules=%d scripts=%d", len(hosts), len(rewriteRules), len(scriptRules))
+	log.Printf("capture config: enabled=%v max_entries=%d max_body_bytes=%d har_out=%q", *captureEnabled, *captureMaxEntries, *captureMaxBodyBytes, *harOut)
 
 	srv := server.New(server.Config{
 		ListenAddr:  *listen,
@@ -85,16 +93,27 @@ func runServe(args []string) error {
 		MITMHosts:   hosts,
 		Rewrite:     rewriteRules,
 		Scripts:     scriptRules,
+		Capture: capture.Config{
+			Enabled:      *captureEnabled,
+			MaxEntries:   *captureMaxEntries,
+			MaxBodyBytes: *captureMaxBodyBytes,
+			ContentTypes: splitCommaList(*captureTypes),
+		},
 	}, caManager, log.Default())
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if err := srv.ListenAndServe(ctx); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil
+	listenErr := srv.ListenAndServe(ctx)
+	if *captureEnabled && strings.TrimSpace(*harOut) != "" {
+		entries := srv.CaptureEntries()
+		if err := har.ExportToFile(*harOut, entries); err != nil {
+			return fmt.Errorf("export har: %w", err)
 		}
-		return err
+		log.Printf("HAR exported: %s (entries=%d)", *harOut, len(entries))
+	}
+	if listenErr != nil && !errors.Is(listenErr, context.Canceled) {
+		return listenErr
 	}
 	return nil
 }

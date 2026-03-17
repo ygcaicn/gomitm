@@ -27,3 +27,4 @@ go.work.sum
 
 # local build outputs
 /gomitm
+tmp/

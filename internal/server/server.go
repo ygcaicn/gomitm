@@ -13,9 +13,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gomitm/internal/ca"
+	"gomitm/internal/capture"
 	"gomitm/internal/domain"
 	"gomitm/internal/policy"
 	"gomitm/internal/script"
@@ -46,17 +48,21 @@ type Config struct {
 	MITMHosts   []string
 	Rewrite     []policy.RewriteRule
 	Scripts     []policy.ScriptRule
+	Capture     capture.Config
 }
 
 type Server struct {
-	cfg     Config
-	ca      *ca.Manager
-	matcher *domain.Matcher
-	rewrite []policy.RewriteRule
-	scripts []policy.ScriptRule
-	engine  *script.Engine
-	logger  *log.Logger
-	ln      net.Listener
+	cfg      Config
+	ca       *ca.Manager
+	matcher  *domain.Matcher
+	rewrite  []policy.RewriteRule
+	scripts  []policy.ScriptRule
+	engine   *script.Engine
+	capCfg   capture.Config
+	capStore *capture.Store
+	seq      atomic.Uint64
+	logger   *log.Logger
+	ln       net.Listener
 }
 
 func New(cfg Config, caManager *ca.Manager, logger *log.Logger) *Server {
@@ -66,19 +72,39 @@ func New(cfg Config, caManager *ca.Manager, logger *log.Logger) *Server {
 	if cfg.DialTimeout <= 0 {
 		cfg.DialTimeout = 10 * time.Second
 	}
+	if cfg.Capture.MaxEntries <= 0 {
+		cfg.Capture.MaxEntries = 1000
+	}
+	if cfg.Capture.MaxBodyBytes <= 0 {
+		cfg.Capture.MaxBodyBytes = 2 * 1024 * 1024
+	}
 	if logger == nil {
 		logger = log.Default()
 	}
 
-	return &Server{
-		cfg:     cfg,
-		ca:      caManager,
-		matcher: domain.NewMatcher(cfg.MITMHosts),
-		rewrite: cfg.Rewrite,
-		scripts: cfg.Scripts,
-		engine:  script.NewEngine(),
-		logger:  logger,
+	var capStore *capture.Store
+	if cfg.Capture.Enabled {
+		capStore = capture.NewStore(cfg.Capture.MaxEntries)
 	}
+
+	return &Server{
+		cfg:      cfg,
+		ca:       caManager,
+		matcher:  domain.NewMatcher(cfg.MITMHosts),
+		rewrite:  cfg.Rewrite,
+		scripts:  cfg.Scripts,
+		engine:   script.NewEngine(),
+		capCfg:   cfg.Capture,
+		capStore: capStore,
+		logger:   logger,
+	}
+}
+
+func (s *Server) CaptureEntries() []capture.Entry {
+	if s.capStore == nil {
+		return nil
+	}
+	return s.capStore.Snapshot()
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -315,13 +341,15 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 			}
 			return fmt.Errorf("read request: %w", err)
 		}
+		started := time.Now()
 
-		if handled, err := s.applyRewrite(req, writer); err != nil {
+		if handled, rewriteResp, rewriteRule, err := s.applyRewrite(req, writer); err != nil {
 			if req.Body != nil {
 				_ = req.Body.Close()
 			}
 			return err
 		} else if handled {
+			s.captureTransaction(req, rewriteResp, started, rewriteRule, "")
 			if req.Body != nil {
 				_ = req.Body.Close()
 			}
@@ -351,6 +379,7 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 		resp, err := transport.RoundTrip(outReq)
 		if err != nil {
 			_ = writeHTTPError(writer, req, http.StatusBadGateway, err.Error())
+			s.captureTransaction(req, nil, started, "", err.Error())
 			if req.Body != nil {
 				_ = req.Body.Close()
 			}
@@ -360,6 +389,7 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 		if _, err := s.engine.ApplyResponseScripts(req, resp, s.scripts); err != nil {
 			s.logger.Printf("script execution failed: %v", err)
 		}
+		s.captureTransaction(req, resp, started, "", "")
 
 		removeHopByHopHeaders(resp.Header)
 		if err := resp.Write(writer); err != nil {
@@ -388,9 +418,9 @@ func (s *Server) handleMITM(rawConn net.Conn, host string, port int) error {
 	}
 }
 
-func (s *Server) applyRewrite(req *http.Request, writer *bufio.Writer) (bool, error) {
+func (s *Server) applyRewrite(req *http.Request, writer *bufio.Writer) (bool, *http.Response, string, error) {
 	if req == nil || len(s.rewrite) == 0 {
-		return false, nil
+		return false, nil, "", nil
 	}
 	fullURL := req.URL.String()
 	if req.URL != nil && !req.URL.IsAbs() {
@@ -409,18 +439,122 @@ func (s *Server) applyRewrite(req *http.Request, writer *bufio.Writer) (bool, er
 		s.logger.Printf("rewrite hit action=%s url=%s", rule.Action, fullURL)
 		switch rule.Action {
 		case policy.RewriteReject200:
-			if err := writeStaticResponse(writer, req, http.StatusOK, ""); err != nil {
-				return true, fmt.Errorf("write reject-200 response: %w", err)
+			rewriteResp := newStaticResponse(req, http.StatusOK, "")
+			if err := writeHTTPResponse(writer, rewriteResp); err != nil {
+				return true, nil, rule.Raw, fmt.Errorf("write reject-200 response: %w", err)
 			}
-			return true, nil
+			return true, rewriteResp, rule.Raw, nil
 		case policy.RewriteReject:
-			if err := writeStaticResponse(writer, req, http.StatusForbidden, "blocked by rewrite rule\n"); err != nil {
-				return true, fmt.Errorf("write reject response: %w", err)
+			rewriteResp := newStaticResponse(req, http.StatusForbidden, "blocked by rewrite rule\n")
+			if err := writeHTTPResponse(writer, rewriteResp); err != nil {
+				return true, nil, rule.Raw, fmt.Errorf("write reject response: %w", err)
 			}
-			return true, nil
+			return true, rewriteResp, rule.Raw, nil
 		}
 	}
-	return false, nil
+	return false, nil, "", nil
+}
+
+func (s *Server) captureTransaction(req *http.Request, resp *http.Response, started time.Time, rule string, errMsg string) {
+	if s.capStore == nil || req == nil {
+		return
+	}
+	entry := capture.Entry{
+		ID:         strconv.FormatUint(s.seq.Add(1), 10),
+		StartedAt:  started,
+		DurationMs: time.Since(started).Milliseconds(),
+		Method:     req.Method,
+		URL:        requestFullURL(req),
+		ReqHeaders: headerToMap(req.Header),
+		Rule:       rule,
+		Error:      errMsg,
+	}
+
+	if resp != nil {
+		entry.RespStatus = resp.StatusCode
+		entry.RespHeaders = headerToMap(resp.Header)
+		body, bodyErr := s.peekResponseBody(resp)
+		if bodyErr != nil && entry.Error == "" {
+			entry.Error = bodyErr.Error()
+		}
+		entry.RespBody = body
+	}
+	s.capStore.Add(entry)
+}
+
+func (s *Server) peekResponseBody(resp *http.Response) (string, error) {
+	if resp == nil || resp.Body == nil {
+		return "", nil
+	}
+	if !shouldCaptureContentType(resp.Header.Get("Content-Type"), s.capCfg.ContentTypes) {
+		return "[body skipped: content-type filtered]", nil
+	}
+	if resp.ContentLength < 0 {
+		return "[body skipped: unknown length]", nil
+	}
+	if s.capCfg.MaxBodyBytes > 0 && resp.ContentLength > s.capCfg.MaxBodyBytes {
+		return "[body skipped: too large]", nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return "", err
+	}
+	resp.Body = io.NopCloser(strings.NewReader(string(body)))
+	resp.ContentLength = int64(len(body))
+	if resp.Header != nil {
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	}
+	return string(body), nil
+}
+
+func requestFullURL(req *http.Request) string {
+	if req == nil || req.URL == nil {
+		return ""
+	}
+	if req.URL.IsAbs() {
+		return req.URL.String()
+	}
+	host := req.Host
+	if host == "" {
+		host = req.URL.Host
+	}
+	return "https://" + host + req.URL.RequestURI()
+}
+
+func headerToMap(h http.Header) map[string]string {
+	if len(h) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		out[k] = strings.Join(v, ",")
+	}
+	return out
+}
+
+func shouldCaptureContentType(contentType string, filters []string) bool {
+	if len(filters) == 0 {
+		return true
+	}
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	for _, f := range filters {
+		f = strings.ToLower(strings.TrimSpace(f))
+		if f == "" {
+			continue
+		}
+		if strings.HasSuffix(f, "/*") {
+			if strings.HasPrefix(ct, strings.TrimSuffix(f, "*")) {
+				return true
+			}
+			continue
+		}
+		if strings.HasPrefix(ct, f) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeHTTPError(w *bufio.Writer, req *http.Request, code int, msg string) error {
@@ -446,7 +580,7 @@ func writeHTTPError(w *bufio.Writer, req *http.Request, code int, msg string) er
 	return w.Flush()
 }
 
-func writeStaticResponse(w *bufio.Writer, req *http.Request, code int, body string) error {
+func newStaticResponse(req *http.Request, code int, body string) *http.Response {
 	resp := &http.Response{
 		StatusCode:    code,
 		Proto:         "HTTP/1.1",
@@ -458,6 +592,13 @@ func writeStaticResponse(w *bufio.Writer, req *http.Request, code int, body stri
 		Request:       req,
 	}
 	resp.Header.Set("Content-Type", "text/plain; charset=utf-8")
+	return resp
+}
+
+func writeHTTPResponse(w *bufio.Writer, resp *http.Response) error {
+	if resp == nil {
+		return errors.New("nil response")
+	}
 	if err := resp.Write(w); err != nil {
 		return err
 	}
