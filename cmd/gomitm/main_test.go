@@ -6,6 +6,20 @@ import (
 	"testing"
 )
 
+func TestVersionString(t *testing.T) {
+	oldVersion, oldCommit, oldBuildDate := version, commit, buildDate
+	version, commit, buildDate = "v1.2.3", "abc123", "2026-03-18T00:00:00Z"
+	t.Cleanup(func() {
+		version, commit, buildDate = oldVersion, oldCommit, oldBuildDate
+	})
+
+	got := versionString()
+	want := "gomitm version v1.2.3 (commit=abc123, build_date=2026-03-18T00:00:00Z)"
+	if got != want {
+		t.Fatalf("versionString() = %q, want %q", got, want)
+	}
+}
+
 func TestParseServeOptionsWithConfigAndCLIOverride(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")

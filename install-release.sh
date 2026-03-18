@@ -254,6 +254,11 @@ install_release() {
   log "Config: $INSTALL_ETC_DIR/config.yaml"
   log "Modules: $INSTALL_SHARE_DIR/modules"
   log "Data: $INSTALL_DATA_DIR"
+  if INSTALLED_VERSION="$("$INSTALL_BIN" version 2>/dev/null)"; then
+    log "Installed version: ${INSTALLED_VERSION}"
+  else
+    log "Installed version: (failed to query via '$INSTALL_BIN version')"
+  fi
   systemctl --no-pager --full status "$SERVICE_NAME" || true
 }
 

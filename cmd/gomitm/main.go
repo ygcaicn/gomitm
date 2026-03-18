@@ -35,6 +35,12 @@ const (
 	defaultCaptureContentType = "application/json,text/*"
 )
 
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
+)
+
 type serveOptions struct {
 	ConfigPath string
 
@@ -88,6 +94,8 @@ func main() {
 		if err := runCA(os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
+	case "version", "-v", "--version":
+		fmt.Println(versionString())
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -552,6 +560,7 @@ Usage:
   gomitm serve [flags]
   gomitm ca init [flags]
   gomitm ca export [flags]
+  gomitm version
 
 Examples:
   gomitm serve --listen :1080 --mitm-hosts "*.googlevideo.com,youtubei.googleapis.com"
@@ -560,5 +569,10 @@ Examples:
   gomitm serve --config ./config.yaml
   gomitm ca init --ca-dir ~/.gomitm/ca
   gomitm ca export --ca-dir ~/.gomitm/ca --out ./gomitm-ca.crt
+  gomitm version
 `)
+}
+
+func versionString() string {
+	return fmt.Sprintf("gomitm version %s (commit=%s, build_date=%s)", version, commit, buildDate)
 }

@@ -72,11 +72,13 @@ sudo bash -c "$(curl -L https://github.com/ygcaicn/gomitm/raw/main/install-relea
 ```
 
 `remove` 只卸载服务、二进制与共享模块目录；会保留 `/etc/gomitm/config.yaml` 和 `/var/lib/gomitm/ca/*`，并打印保留项清单。
+安装完成后脚本会自动执行 `gomitm version` 打印当前已安装版本。
 
 ### 1) 构建
 
 ```bash
 go build -o ./gomitm ./cmd/gomitm
+./gomitm version
 ```
 
 ### 2) 初始化并导出 CA

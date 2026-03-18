@@ -61,6 +61,8 @@ jobs:
           set -euo pipefail
 
           mkdir -p dist
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${SHA} -X main.buildDate=${BUILD_DATE}"
 
           targets=(
             "linux amd64"
@@ -84,7 +86,7 @@ jobs:
             mkdir -p "$OUTDIR"
 
             CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-              go build -trimpath -ldflags "-s -w" \
+              go build -trimpath -ldflags "$LDFLAGS" \
               -o "$OUTDIR/${BIN}${EXT}" ./cmd/gomitm
 
             cp config.example.yaml "$OUTDIR/config.yaml"
