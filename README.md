@@ -4,13 +4,13 @@
 
 ![GoMITM 根证书安装页截图](./docs/images/gomitm-ca-install-page.png)
 
-## 为什么值得转发
+## 为什么值得用
 
 - 5 分钟跑通：启动后直接访问 `http://8.8.9.9/` 下载并安装 CA
 - 兼顾调试与分析：实时抓包 + HAR 导出，且保留上游原始响应与最终响应
 - 规则迁移成本低：支持 Surge-like 模块子集（MITM / URL Rewrite / Script）
 
-`gomitm` 是一个面向类 Unix 系统的高性能 SOCKS5 MITM 代理，目标是把“路由能力 + HTTPS 解密 + 模块化脚本处理 + 抓包导出”整合到一个可扩展的 Go 工具里。
+`gomitm` 是一个高性能 SOCKS5 MITM 代理，目标是把“路由能力 + HTTPS 解密 + 模块化脚本处理 + 抓包导出”整合到一个可扩展的 Go 工具里。
 
 项目现阶段聚焦：
 
@@ -26,7 +26,7 @@
 - MITM 策略：
   - 按域名列表（`mitm.hosts` / `--mitm-hosts`）
   - 全量 443（`mitm.all` / `--mitm-all`）
-  - 内置 `www4.google.com` 证书门户始终可 MITM
+  - 内置证书安装页流量保底可 MITM（便于首次安装 CA）
 - HTTPS MITM（HTTP/1.1）+ 动态证书签发
 - CA 管理：
   - 首次启动自动生成 Root CA
@@ -48,6 +48,11 @@
 如果你不想本地编译，也可以直接下载预编译发布包：
 
 - GitHub Releases: <https://github.com/ygcaicn/gomitm/releases>
+
+## 适用环境
+
+- 源码构建：Go `1.22+`
+- 预编译发布包：Linux / macOS / Windows（amd64 / arm64）
 
 ### 1) 构建
 
@@ -72,6 +77,7 @@ go build -o ./gomitm ./cmd/gomitm
 
 - SOCKS5: `127.0.0.1:1080`
 - 在系统/浏览器导入并信任 `gomitm-ca.crt`
+- 访问内置证书安装页前，请确保目标应用已走该 SOCKS5 代理
 
 ## Built-in Pages
 
@@ -90,7 +96,9 @@ go build -o ./gomitm ./cmd/gomitm
 - `serve.admin_listen`: Admin API 监听地址
 - `serve.ca_dir`: CA 存储目录
 - `mitm.all`: 是否全量 MITM 所有 `443` 目标
+- `mitm.fail_open`: MITM 失败时是否回退为直连透传
 - `mitm.hosts`: 域名匹配 MITM 列表（`mitm.all=false` 时生效）
+- `mitm.bypass_hosts`: 强制跳过 MITM 的域名列表（优先于 `mitm.hosts`）
 - `modules[]`: 模块挂载列表
 - `capture.*`: 抓包与 HAR 导出相关参数
 
@@ -123,6 +131,7 @@ modules:
   - 面向浏览器端 YouTube 的轻量清理规则
 - `YouTubeNoAds`（默认关闭）
   - 外部远程模块示例，适用于特定 API/客户端场景
+  - 远程模块来自第三方仓库，请按需自行审计脚本内容
 
 ## Admin API
 
