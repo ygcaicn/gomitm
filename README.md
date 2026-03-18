@@ -54,6 +54,15 @@
 - 源码构建：Go `1.22+`
 - 预编译发布包：Linux / macOS / Windows（amd64 / arm64）
 
+## 一键安装（Linux）
+
+仅支持主流 Linux 发行版（Debian/Ubuntu、RHEL 系、Fedora、Arch、openSUSE）且要求 `systemd`。
+
+```bash
+sudo bash -c "$(curl -L https://github.com/ygcaicn/gomitm/raw/main/install-release.sh)" @ install
+sudo bash -c "$(curl -L https://github.com/ygcaicn/gomitm/raw/main/install-release.sh)" @ remove
+```
+
 ### 1) 构建
 
 ```bash
