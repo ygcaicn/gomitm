@@ -58,6 +58,14 @@
 
 仅支持主流 Linux 发行版（Debian/Ubuntu、RHEL 系、Fedora、Arch、openSUSE）且要求 `systemd`。
 
+安装路径遵循 FHS：
+
+- Binary: `/usr/local/bin/gomitm`
+- Config: `/etc/gomitm/config.yaml`
+- Modules: `/usr/local/share/gomitm/modules/`
+- Runtime/Data: `/var/lib/gomitm`
+- systemd unit: `/etc/systemd/system/gomitm.service`
+
 ```bash
 sudo bash -c "$(curl -L https://github.com/ygcaicn/gomitm/raw/main/install-release.sh)" @ install
 sudo bash -c "$(curl -L https://github.com/ygcaicn/gomitm/raw/main/install-release.sh)" @ remove
