@@ -48,7 +48,6 @@
 如果你不想本地编译，也可以直接下载预编译发布包：
 
 - GitHub Releases: <https://github.com/ygcaicn/gomitm/releases>
-- Gitea Releases: <https://git.argc.top/Jachin/gomitm/releases>
 
 ### 1) 构建
 
@@ -166,8 +165,6 @@ go test -run '^$' -bench . -benchmem ./internal/capture ./internal/module ./inte
 
 - `.github/workflows/ci.yml`
 - `.github/workflows/release.yml`
-- `.gitea/workflows/ci.yml`
-- `.gitea/workflows/release.yml`
 
 触发方式：
 
@@ -178,7 +175,6 @@ go test -run '^$' -bench . -benchmem ./internal/capture ./internal/module ./inte
 
 仓库 Secret：
 
-- Gitea: `TOKEN`（需具备 Release 写权限）
 - GitHub: 使用内置 `GITHUB_TOKEN`（无需额外配置同名 Secret）
 
 ## Known Limits
