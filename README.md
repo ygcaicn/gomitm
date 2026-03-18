@@ -6,7 +6,7 @@
 
 ## 为什么值得用
 
-- 5 分钟跑通：启动后直接访问 `http://8.8.9.9/` 下载并安装 CA
+- 5 分钟跑通：启动后直接访问 [http://8.8.9.9/](http://8.8.9.9/) 下载并安装 CA
 - 兼顾调试与分析：实时抓包 + HAR 导出，且保留上游原始响应与最终响应
 - 规则迁移成本低：支持 Surge-like 模块子集（MITM / URL Rewrite / Script）
 
@@ -81,7 +81,7 @@ go build -o ./gomitm ./cmd/gomitm
 
 ## Built-in Pages
 
-- `http://8.8.9.9/`
+- [http://8.8.9.9/](http://8.8.9.9/)
   - 用于首次引导安装根证书
 
 ## Configuration
