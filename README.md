@@ -53,6 +53,8 @@
 
 - 源码构建：Go `1.22+`
 - 预编译发布包：Linux / macOS / Windows（amd64 / arm64）
+- OpenWrt 预编译发布包：`amd64` / `armv7` / `arm64` / `mips softfloat` / `mipsle softfloat`
+  - 资产命名示例：`gomitm_vX.Y.Z_openwrt_mipsle_softfloat.tar.gz`
 
 ## 一键安装（Linux）
 
@@ -200,6 +202,7 @@ go test -run '^$' -bench . -benchmem ./internal/capture ./internal/module ./inte
 
 1. `push main` / `pull_request main`：测试 + 构建冒烟
 2. `push tag v*`：交叉编译并发布 Release
+   - 包含 OpenWrt 目标：`openwrt_amd64` / `openwrt_armv7` / `openwrt_arm64` / `openwrt_mips_softfloat` / `openwrt_mipsle_softfloat`
 3. `workflow_dispatch`：支持手动触发发布
    - 非 tag 引用下需提供 `release_tag`（例如 `v0.1.3`）
 

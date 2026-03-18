@@ -65,42 +65,54 @@ jobs:
           LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${SHA} -X main.buildDate=${BUILD_DATE}"
 
           targets=(
-            "linux amd64"
-            "linux arm64"
-            "darwin amd64"
-            "darwin arm64"
-            "windows amd64"
-            "windows arm64"
+            "linux|amd64|linux_amd64|"
+            "linux|arm64|linux_arm64|"
+            "darwin|amd64|darwin_amd64|"
+            "darwin|arm64|darwin_arm64|"
+            "windows|amd64|windows_amd64|"
+            "windows|arm64|windows_arm64|"
+            "linux|amd64|openwrt_amd64|"
+            "linux|arm|openwrt_armv7|GOARM=7"
+            "linux|arm64|openwrt_arm64|"
+            "linux|mips|openwrt_mips_softfloat|GOMIPS=softfloat"
+            "linux|mipsle|openwrt_mipsle_softfloat|GOMIPS=softfloat"
           )
 
           for t in "${targets[@]}"; do
-            GOOS="$(echo "$t" | awk '{print $1}')"
-            GOARCH="$(echo "$t" | awk '{print $2}')"
+            IFS='|' read -r GOOS GOARCH TARGET_ID EXTRA_ENV <<<"$t"
             BIN="gomitm"
             EXT=""
             if [ "$GOOS" = "windows" ]; then
               EXT=".exe"
             fi
 
-            OUTDIR="dist/gomitm_${VERSION}_${GOOS}_${GOARCH}"
+            OUTDIR="dist/gomitm_${VERSION}_${TARGET_ID}"
             mkdir -p "$OUTDIR"
 
-            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-              go build -trimpath -ldflags "$LDFLAGS" \
+            build_env=(
+              "CGO_ENABLED=0"
+              "GOOS=${GOOS}"
+              "GOARCH=${GOARCH}"
+            )
+            if [ -n "$EXTRA_ENV" ]; then
+              build_env+=("$EXTRA_ENV")
+            fi
+
+            env "${build_env[@]}" go build -trimpath -ldflags "$LDFLAGS" \
               -o "$OUTDIR/${BIN}${EXT}" ./cmd/gomitm
 
             cp config.example.yaml "$OUTDIR/config.yaml"
             cp -R modules "$OUTDIR/"
 
             if [ "$GOOS" = "windows" ]; then
-              ASSET="gomitm_${VERSION}_${GOOS}_${GOARCH}.zip"
-              (cd dist && zip -rq "$ASSET" "gomitm_${VERSION}_${GOOS}_${GOARCH}")
+              ASSET="gomitm_${VERSION}_${TARGET_ID}.zip"
+              (cd dist && zip -rq "$ASSET" "gomitm_${VERSION}_${TARGET_ID}")
               ZIP_LIST="$(unzip -Z1 "dist/$ASSET")"
               grep -qE "/config\\.yaml$" <<<"$ZIP_LIST"
               grep -qE "/modules/google-home-fun\\.sgmodule$" <<<"$ZIP_LIST"
             else
-              ASSET="gomitm_${VERSION}_${GOOS}_${GOARCH}.tar.gz"
-              (cd dist && tar -czf "$ASSET" "gomitm_${VERSION}_${GOOS}_${GOARCH}")
+              ASSET="gomitm_${VERSION}_${TARGET_ID}.tar.gz"
+              (cd dist && tar -czf "$ASSET" "gomitm_${VERSION}_${TARGET_ID}")
               TAR_LIST="$(tar -tzf "dist/$ASSET")"
               grep -qE "/config\\.yaml$" <<<"$TAR_LIST"
               grep -qE "/modules/google-home-fun\\.sgmodule$" <<<"$TAR_LIST"
