@@ -71,6 +71,8 @@ sudo bash -c "$(curl -L https://github.com/ygcaicn/gomitm/raw/main/install-relea
 sudo bash -c "$(curl -L https://github.com/ygcaicn/gomitm/raw/main/install-release.sh)" @ remove
 ```
 
+`remove` 只卸载服务、二进制与共享模块目录；会保留 `/etc/gomitm/config.yaml` 和 `/var/lib/gomitm/ca/*`，并打印保留项清单。
+
 ### 1) 构建
 
 ```bash

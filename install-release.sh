@@ -269,20 +269,41 @@ remove_release() {
 
   rm -f "$INSTALL_BIN"
   rm -rf "$INSTALL_SHARE_DIR"
-  rm -rf "$INSTALL_ETC_DIR"
-  rm -rf "$INSTALL_DATA_DIR"
-
-  if id -u "$APP" >/dev/null 2>&1; then
-    userdel "$APP" >/dev/null 2>&1 || true
-  fi
-  if getent group "$APP" >/dev/null 2>&1; then
-    groupdel "$APP" >/dev/null 2>&1 || true
-  fi
 
   log "Removed: $INSTALL_BIN"
-  log "Removed: $INSTALL_ETC_DIR"
   log "Removed: $INSTALL_SHARE_DIR"
-  log "Removed: $INSTALL_DATA_DIR"
+
+  log "Retained paths:"
+  if [ -d "$INSTALL_ETC_DIR" ]; then
+    log "  - $INSTALL_ETC_DIR"
+  else
+    log "  - $INSTALL_ETC_DIR (not found)"
+  fi
+  if [ -d "$INSTALL_DATA_DIR" ]; then
+    log "  - $INSTALL_DATA_DIR"
+  else
+    log "  - $INSTALL_DATA_DIR (not found)"
+  fi
+
+  if [ -f "$INSTALL_ETC_DIR/config.yaml" ]; then
+    log "Retained config: $INSTALL_ETC_DIR/config.yaml"
+  else
+    log "Retained config: $INSTALL_ETC_DIR/config.yaml (not found)"
+  fi
+  if [ -f "$INSTALL_DATA_DIR/ca/root_ca.crt" ]; then
+    log "Retained cert: $INSTALL_DATA_DIR/ca/root_ca.crt"
+  else
+    log "Retained cert: $INSTALL_DATA_DIR/ca/root_ca.crt (not found)"
+  fi
+  if [ -f "$INSTALL_DATA_DIR/ca/root_ca.key" ]; then
+    log "Retained key: $INSTALL_DATA_DIR/ca/root_ca.key"
+  else
+    log "Retained key: $INSTALL_DATA_DIR/ca/root_ca.key (not found)"
+  fi
+
+  if id -u "$APP" >/dev/null 2>&1; then
+    log "Retained service user: $APP"
+  fi
 }
 
 main() {
