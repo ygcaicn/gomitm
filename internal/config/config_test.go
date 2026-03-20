@@ -13,8 +13,13 @@ func TestLoadFile(t *testing.T) {
 serve:
   listen: ":2080"
   admin_listen: "127.0.0.1:19090"
+  admin_token: "demo-admin-token"
   ca_dir: "~/.gomitm/ca"
   dial_timeout: "12s"
+  script_timeout: "250ms"
+  socks_username: "alice"
+  socks_password: "secret"
+  max_conns: 3000
   udp_max_sessions: 2048
   udp_idle_timeout: "3m"
 mitm:
@@ -40,6 +45,12 @@ capture:
   max_body_bytes: 456
   content_types:
     - "application/json"
+  redact_headers:
+    - "Authorization"
+    - "Cookie"
+  redact_json_fields:
+    - "token"
+    - "password"
   har_out: "./tmp/out.har"
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -56,6 +67,18 @@ capture:
 	}
 	if cfg.Capture.MaxEntries != 123 {
 		t.Fatalf("max_entries got=%d", cfg.Capture.MaxEntries)
+	}
+	if cfg.Serve.AdminToken != "demo-admin-token" {
+		t.Fatalf("admin token got=%q", cfg.Serve.AdminToken)
+	}
+	if cfg.Serve.ScriptTimeout != "250ms" {
+		t.Fatalf("script timeout got=%q", cfg.Serve.ScriptTimeout)
+	}
+	if cfg.Serve.SOCKSUsername != "alice" || cfg.Serve.SOCKSPassword != "secret" {
+		t.Fatalf("socks auth got user=%q pass=%q", cfg.Serve.SOCKSUsername, cfg.Serve.SOCKSPassword)
+	}
+	if cfg.Serve.MaxConns != 3000 {
+		t.Fatalf("max_conns got=%d", cfg.Serve.MaxConns)
 	}
 	if cfg.Serve.UDPMaxSessions != 2048 {
 		t.Fatalf("udp max sessions got=%d", cfg.Serve.UDPMaxSessions)
@@ -80,5 +103,11 @@ capture:
 	}
 	if cfg.Modules[0].Arguments["foo"] != "bar" {
 		t.Fatalf("arg foo got=%v", cfg.Modules[0].Arguments["foo"])
+	}
+	if len(cfg.Capture.RedactHeaders) != 2 || cfg.Capture.RedactHeaders[0] != "Authorization" {
+		t.Fatalf("redact headers got=%v", cfg.Capture.RedactHeaders)
+	}
+	if len(cfg.Capture.RedactJSONFields) != 2 || cfg.Capture.RedactJSONFields[0] != "token" {
+		t.Fatalf("redact json fields got=%v", cfg.Capture.RedactJSONFields)
 	}
 }

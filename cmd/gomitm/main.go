@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,14 +26,18 @@ import (
 )
 
 const (
-	defaultListen             = ":1080"
+	defaultListen             = "127.0.0.1:1080"
 	defaultCADir              = "~/.gomitm/ca"
 	defaultDialTimeout        = 10 * time.Second
+	defaultScriptTimeout      = 200 * time.Millisecond
+	defaultMaxConns           = 4096
 	defaultUDPIdleTimeout     = 2 * time.Minute
 	defaultUDPMaxSessions     = 1024
 	defaultCaptureMaxEntries  = 1000
 	defaultCaptureMaxBody     = 2 * 1024 * 1024
 	defaultCaptureContentType = "application/json,text/*"
+	defaultCaptureRedactHdrs  = "Authorization,Proxy-Authorization,Cookie,Set-Cookie"
+	defaultCaptureRedactJSON  = "password,passwd,pwd,token,access_token,refresh_token,secret,api_key,apikey,session"
 )
 
 var (
@@ -46,8 +51,13 @@ type serveOptions struct {
 
 	Listen         string
 	AdminListen    string
+	AdminToken     string
 	CADir          string
 	DialTimeout    time.Duration
+	ScriptTimeout  time.Duration
+	MaxConns       int
+	SOCKSUsername  string
+	SOCKSPassword  string
 	UDPMaxSessions int
 	UDPIdleTimeout time.Duration
 
@@ -62,6 +72,8 @@ type serveOptions struct {
 	CaptureMaxEntries   int
 	CaptureMaxBodyBytes int64
 	CaptureTypes        []string
+	CaptureRedactHdrs   []string
+	CaptureRedactJSON   []string
 	HAROut              string
 }
 
@@ -70,11 +82,15 @@ func defaultServeOptions() serveOptions {
 		Listen:              defaultListen,
 		CADir:               defaultCADir,
 		DialTimeout:         defaultDialTimeout,
+		ScriptTimeout:       defaultScriptTimeout,
+		MaxConns:            defaultMaxConns,
 		UDPMaxSessions:      defaultUDPMaxSessions,
 		UDPIdleTimeout:      defaultUDPIdleTimeout,
 		CaptureMaxEntries:   defaultCaptureMaxEntries,
 		CaptureMaxBodyBytes: defaultCaptureMaxBody,
 		CaptureTypes:        splitCommaList(defaultCaptureContentType),
+		CaptureRedactHdrs:   splitCommaList(defaultCaptureRedactHdrs),
+		CaptureRedactJSON:   splitCommaList(defaultCaptureRedactJSON),
 		ModuleSources:       []module.Source{},
 	}
 }
@@ -136,12 +152,18 @@ func runServe(args []string) error {
 		udpRules = append(udpRules, parsedModule.UDPRules...)
 	}
 	log.Printf("policy loaded: mitm_hosts=%d mitm_bypass_hosts=%d rewrite_rules=%d scripts=%d udp_rules=%d", len(hosts), len(opts.MITMBypassHosts), len(rewriteRules), len(scriptRules), len(udpRules))
+	log.Printf("connection config: max_conns=%d", opts.MaxConns)
 	log.Printf("udp config: max_sessions=%d idle_timeout=%s", opts.UDPMaxSessions, opts.UDPIdleTimeout)
-	log.Printf("capture config: enabled=%v max_entries=%d max_body_bytes=%d har_out=%q", opts.CaptureEnabled, opts.CaptureMaxEntries, opts.CaptureMaxBodyBytes, opts.HAROut)
+	log.Printf("script config: timeout=%s", opts.ScriptTimeout)
+	log.Printf("capture config: enabled=%v max_entries=%d max_body_bytes=%d har_out=%q redact_headers=%d redact_json_fields=%d", opts.CaptureEnabled, opts.CaptureMaxEntries, opts.CaptureMaxBodyBytes, opts.HAROut, len(opts.CaptureRedactHdrs), len(opts.CaptureRedactJSON))
 
 	srv := server.New(server.Config{
 		ListenAddr:      opts.Listen,
 		DialTimeout:     opts.DialTimeout,
+		ScriptTimeout:   opts.ScriptTimeout,
+		MaxConns:        opts.MaxConns,
+		SOCKSUsername:   opts.SOCKSUsername,
+		SOCKSPassword:   opts.SOCKSPassword,
 		UDPMaxSessions:  opts.UDPMaxSessions,
 		UDPIdleTimeout:  opts.UDPIdleTimeout,
 		MITMHosts:       hosts,
@@ -152,10 +174,12 @@ func runServe(args []string) error {
 		Scripts:         scriptRules,
 		UDPRules:        udpRules,
 		Capture: capture.Config{
-			Enabled:      opts.CaptureEnabled,
-			MaxEntries:   opts.CaptureMaxEntries,
-			MaxBodyBytes: opts.CaptureMaxBodyBytes,
-			ContentTypes: opts.CaptureTypes,
+			Enabled:          opts.CaptureEnabled,
+			MaxEntries:       opts.CaptureMaxEntries,
+			MaxBodyBytes:     opts.CaptureMaxBodyBytes,
+			ContentTypes:     opts.CaptureTypes,
+			RedactHeaders:    opts.CaptureRedactHdrs,
+			RedactJSONFields: opts.CaptureRedactJSON,
 		},
 	}, caManager, log.Default())
 
@@ -166,7 +190,7 @@ func runServe(args []string) error {
 	if strings.TrimSpace(opts.AdminListen) != "" {
 		adminHTTP = &http.Server{
 			Addr:              opts.AdminListen,
-			Handler:           admin.NewHandler(srv),
+			Handler:           admin.NewHandler(srv, admin.Options{BearerToken: opts.AdminToken}),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		go func() {
@@ -203,6 +227,8 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	configPath := fs.String("config", "", "config file path (YAML)")
 	listen := fs.String("listen", "", "SOCKS5 listen address")
 	caDir := fs.String("ca-dir", "", "CA storage directory")
+	socksUser := fs.String("socks-user", "", "SOCKS5 username (RFC1929)")
+	socksPass := fs.String("socks-pass", "", "SOCKS5 password (RFC1929)")
 	mitmHosts := fs.String("mitm-hosts", "", "comma-separated MITM hosts, e.g. *.googlevideo.com,youtubei.googleapis.com")
 	mitmAll := fs.Bool("mitm-all", false, "MITM all HTTPS hosts on port 443")
 	mitmBypassHosts := fs.String("mitm-bypass-hosts", "", "comma-separated hosts to bypass MITM")
@@ -211,14 +237,19 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	moduleFiles := fs.String("module-files", "", "comma-separated local sgmodule file paths")
 	moduleArgs := fs.String("module-args", "", "module argument overrides, e.g. key1=value1,key2=true")
 	dialTimeout := fs.String("dial-timeout", "", "upstream dial timeout (e.g. 10s)")
+	scriptTimeout := fs.String("script-timeout", "", "script execution timeout (e.g. 200ms)")
+	maxConns := fs.Int("max-conns", 0, "max concurrent client connections (global)")
 	udpMaxSessions := fs.Int("udp-max-sessions", 0, "max active UDP ASSOCIATE sessions")
 	udpIdleTimeout := fs.String("udp-idle-timeout", "", "idle timeout for UDP ASSOCIATE session (e.g. 2m)")
 	captureEnabled := fs.Bool("capture-enabled", false, "enable MITM HTTP capture")
 	captureMaxEntries := fs.Int("capture-max-entries", 0, "max in-memory capture entries")
 	captureMaxBodyBytes := fs.Int64("capture-max-body-bytes", 0, "max captured response body size in bytes")
 	captureTypes := fs.String("capture-content-types", "", "comma-separated content-type filters")
+	captureRedactHeaders := fs.String("capture-redact-headers", "", "comma-separated header names to redact")
+	captureRedactJSONFields := fs.String("capture-redact-json-fields", "", "comma-separated JSON body keys to redact")
 	harOut := fs.String("har-out", "", "export captured entries to HAR file on exit")
 	adminListen := fs.String("admin-listen", "", "admin HTTP listen address, e.g. 127.0.0.1:9090")
+	adminToken := fs.String("admin-token", "", "admin API bearer token (required for non-loopback admin listen)")
 
 	if err := fs.Parse(args); err != nil {
 		return opts, err
@@ -246,8 +277,17 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	if visited["ca-dir"] {
 		opts.CADir = strings.TrimSpace(*caDir)
 	}
+	if visited["socks-user"] {
+		opts.SOCKSUsername = strings.TrimSpace(*socksUser)
+	}
+	if visited["socks-pass"] {
+		opts.SOCKSPassword = strings.TrimSpace(*socksPass)
+	}
 	if visited["admin-listen"] {
 		opts.AdminListen = strings.TrimSpace(*adminListen)
+	}
+	if visited["admin-token"] {
+		opts.AdminToken = strings.TrimSpace(*adminToken)
 	}
 	if visited["mitm-hosts"] {
 		opts.MITMHosts = splitCommaList(*mitmHosts)
@@ -300,6 +340,16 @@ func parseServeOptions(args []string) (serveOptions, error) {
 		}
 		opts.DialTimeout = d
 	}
+	if visited["script-timeout"] {
+		d, err := time.ParseDuration(strings.TrimSpace(*scriptTimeout))
+		if err != nil {
+			return opts, fmt.Errorf("invalid --script-timeout: %w", err)
+		}
+		opts.ScriptTimeout = d
+	}
+	if visited["max-conns"] {
+		opts.MaxConns = *maxConns
+	}
 	if visited["udp-max-sessions"] {
 		opts.UDPMaxSessions = *udpMaxSessions
 	}
@@ -322,6 +372,12 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	if visited["capture-content-types"] {
 		opts.CaptureTypes = splitCommaList(*captureTypes)
 	}
+	if visited["capture-redact-headers"] {
+		opts.CaptureRedactHdrs = splitCommaList(*captureRedactHeaders)
+	}
+	if visited["capture-redact-json-fields"] {
+		opts.CaptureRedactJSON = splitCommaList(*captureRedactJSONFields)
+	}
 	if visited["har-out"] {
 		opts.HAROut = strings.TrimSpace(*harOut)
 	}
@@ -334,6 +390,12 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	}
 	if opts.DialTimeout <= 0 {
 		opts.DialTimeout = defaultDialTimeout
+	}
+	if opts.ScriptTimeout <= 0 {
+		opts.ScriptTimeout = defaultScriptTimeout
+	}
+	if opts.MaxConns <= 0 {
+		opts.MaxConns = defaultMaxConns
 	}
 	if opts.UDPMaxSessions <= 0 {
 		opts.UDPMaxSessions = defaultUDPMaxSessions
@@ -350,6 +412,15 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	if len(opts.CaptureTypes) == 0 {
 		opts.CaptureTypes = splitCommaList(defaultCaptureContentType)
 	}
+	if len(opts.CaptureRedactHdrs) == 0 {
+		opts.CaptureRedactHdrs = splitCommaList(defaultCaptureRedactHdrs)
+	}
+	if len(opts.CaptureRedactJSON) == 0 {
+		opts.CaptureRedactJSON = splitCommaList(defaultCaptureRedactJSON)
+	}
+	if err := validateServeOptions(opts); err != nil {
+		return opts, err
+	}
 	return opts, nil
 }
 
@@ -363,8 +434,17 @@ func applyConfigFile(opts *serveOptions, cfg *config.File) error {
 	if cfg.Serve.AdminListen != "" {
 		opts.AdminListen = strings.TrimSpace(cfg.Serve.AdminListen)
 	}
+	if cfg.Serve.AdminToken != "" {
+		opts.AdminToken = strings.TrimSpace(cfg.Serve.AdminToken)
+	}
 	if cfg.Serve.CADir != "" {
 		opts.CADir = strings.TrimSpace(cfg.Serve.CADir)
+	}
+	if cfg.Serve.SOCKSUsername != "" {
+		opts.SOCKSUsername = strings.TrimSpace(cfg.Serve.SOCKSUsername)
+	}
+	if cfg.Serve.SOCKSPassword != "" {
+		opts.SOCKSPassword = strings.TrimSpace(cfg.Serve.SOCKSPassword)
 	}
 	if strings.TrimSpace(cfg.Serve.DialTimeout) != "" {
 		d, err := time.ParseDuration(strings.TrimSpace(cfg.Serve.DialTimeout))
@@ -372,6 +452,16 @@ func applyConfigFile(opts *serveOptions, cfg *config.File) error {
 			return fmt.Errorf("invalid config serve.dial_timeout: %w", err)
 		}
 		opts.DialTimeout = d
+	}
+	if strings.TrimSpace(cfg.Serve.ScriptTimeout) != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(cfg.Serve.ScriptTimeout))
+		if err != nil {
+			return fmt.Errorf("invalid config serve.script_timeout: %w", err)
+		}
+		opts.ScriptTimeout = d
+	}
+	if cfg.Serve.MaxConns > 0 {
+		opts.MaxConns = cfg.Serve.MaxConns
 	}
 	if cfg.Serve.UDPMaxSessions > 0 {
 		opts.UDPMaxSessions = cfg.Serve.UDPMaxSessions
@@ -414,6 +504,12 @@ func applyConfigFile(opts *serveOptions, cfg *config.File) error {
 	}
 	if len(cfg.Capture.ContentTypes) > 0 {
 		opts.CaptureTypes = append([]string{}, cfg.Capture.ContentTypes...)
+	}
+	if len(cfg.Capture.RedactHeaders) > 0 {
+		opts.CaptureRedactHdrs = append([]string{}, cfg.Capture.RedactHeaders...)
+	}
+	if len(cfg.Capture.RedactJSONFields) > 0 {
+		opts.CaptureRedactJSON = append([]string{}, cfg.Capture.RedactJSONFields...)
 	}
 	if cfg.Capture.HAROut != "" {
 		opts.HAROut = strings.TrimSpace(cfg.Capture.HAROut)
@@ -553,8 +649,43 @@ func dedupStrings(in []string) []string {
 	return out
 }
 
+func validateServeOptions(opts serveOptions) error {
+	userSet := strings.TrimSpace(opts.SOCKSUsername) != ""
+	passSet := strings.TrimSpace(opts.SOCKSPassword) != ""
+	if userSet != passSet {
+		return errors.New("both SOCKS username and password must be set together")
+	}
+	if !isLoopbackListenAddress(opts.Listen) && (!userSet || !passSet) {
+		return fmt.Errorf("non-loopback listen %q requires SOCKS authentication (--socks-user/--socks-pass)", opts.Listen)
+	}
+	if strings.TrimSpace(opts.AdminListen) != "" && !isLoopbackListenAddress(opts.AdminListen) && strings.TrimSpace(opts.AdminToken) == "" {
+		return fmt.Errorf("non-loopback admin listen %q requires --admin-token", opts.AdminListen)
+	}
+	return nil
+}
+
+func isLoopbackListenAddress(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func usage() {
-	fmt.Fprintf(os.Stderr, `gomitm - high performance SOCKS5 MITM proxy (M1 skeleton)
+	fmt.Fprintf(os.Stderr, `gomitm - high performance SOCKS5 MITM proxy
 
 Usage:
   gomitm serve [flags]
@@ -563,9 +694,9 @@ Usage:
   gomitm version
 
 Examples:
-  gomitm serve --listen :1080 --mitm-hosts "*.googlevideo.com,youtubei.googleapis.com"
-  gomitm serve --listen :1080 --mitm-all
-  gomitm serve --listen :1080 --module-urls "https://example.com/YouTubeNoAd.sgmodule"
+  gomitm serve --listen 127.0.0.1:1080 --mitm-hosts "*.googlevideo.com,youtubei.googleapis.com"
+  gomitm serve --listen 127.0.0.1:1080 --mitm-all
+  gomitm serve --listen 127.0.0.1:1080 --module-urls "https://example.com/YouTubeNoAd.sgmodule"
   gomitm serve --config ./config.yaml
   gomitm ca init --ca-dir ~/.gomitm/ca
   gomitm ca export --ca-dir ~/.gomitm/ca --out ./gomitm-ca.crt

@@ -3,8 +3,10 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -30,6 +32,7 @@ const (
 
 	authNoAcceptable = 0xFF
 	authNoAuth       = 0x00
+	authUserPass     = 0x02
 
 	cmdConnect      = 0x01
 	cmdUDPAssociate = 0x03
@@ -53,6 +56,10 @@ const (
 type Config struct {
 	ListenAddr      string
 	DialTimeout     time.Duration
+	ScriptTimeout   time.Duration
+	MaxConns        int
+	SOCKSUsername   string
+	SOCKSPassword   string
 	MITMHosts       []string
 	MITMAll         bool
 	MITMBypassHosts []string
@@ -66,21 +73,28 @@ type Config struct {
 }
 
 type Server struct {
-	cfg       Config
-	ca        *ca.Manager
-	matcher   *domain.Matcher
-	bypass    *domain.Matcher
-	failOpen  bool
-	rewrite   []policy.RewriteRule
-	scripts   []policy.ScriptRule
-	udpRules  []policy.UDPRule
-	engine    *script.Engine
-	transport *http.Transport
-	capCfg    capture.Config
-	capStore  *capture.Store
-	seq       atomic.Uint64
-	logger    *log.Logger
-	ln        net.Listener
+	cfg                 Config
+	ca                  *ca.Manager
+	matcher             *domain.Matcher
+	bypass              *domain.Matcher
+	failOpen            bool
+	rewrite             []policy.RewriteRule
+	scripts             []policy.ScriptRule
+	udpRules            []policy.UDPRule
+	authUser            string
+	authPass            string
+	engine              *script.Engine
+	transport           *http.Transport
+	capCfg              capture.Config
+	capRedactHeaders    map[string]struct{}
+	capRedactJSONFields map[string]struct{}
+	capStore            *capture.Store
+	seq                 atomic.Uint64
+	logger              *log.Logger
+	ln                  net.Listener
+	connActive          atomic.Int64
+	connTotal           atomic.Uint64
+	connLimitDrop       atomic.Uint64
 
 	udpSessionsActive    atomic.Int64
 	udpSessionsTotal     atomic.Uint64
@@ -98,8 +112,16 @@ type Server struct {
 }
 
 type Stats struct {
+	Conn ConnStats `json:"conn"`
 	UDP  UDPStats  `json:"udp"`
 	MITM MITMStats `json:"mitm"`
+}
+
+type ConnStats struct {
+	MaxConns    int    `json:"max_conns"`
+	ActiveConns int64  `json:"active_conns"`
+	TotalConns  uint64 `json:"total_conns"`
+	LimitDrop   uint64 `json:"limit_drop"`
 }
 
 type UDPStats struct {
@@ -132,10 +154,16 @@ type responseSnapshot struct {
 
 func New(cfg Config, caManager *ca.Manager, logger *log.Logger) *Server {
 	if cfg.ListenAddr == "" {
-		cfg.ListenAddr = ":1080"
+		cfg.ListenAddr = "127.0.0.1:1080"
 	}
 	if cfg.DialTimeout <= 0 {
 		cfg.DialTimeout = 10 * time.Second
+	}
+	if cfg.ScriptTimeout <= 0 {
+		cfg.ScriptTimeout = 200 * time.Millisecond
+	}
+	if cfg.MaxConns <= 0 {
+		cfg.MaxConns = 4096
 	}
 	if cfg.Capture.MaxEntries <= 0 {
 		cfg.Capture.MaxEntries = 1000
@@ -169,20 +197,24 @@ func New(cfg Config, caManager *ca.Manager, logger *log.Logger) *Server {
 	}
 
 	return &Server{
-		cfg:           cfg,
-		ca:            caManager,
-		matcher:       domain.NewMatcher(cfg.MITMHosts),
-		bypass:        domain.NewMatcher(cfg.MITMBypassHosts),
-		failOpen:      cfg.MITMFailOpen,
-		rewrite:       cfg.Rewrite,
-		scripts:       cfg.Scripts,
-		udpRules:      cfg.UDPRules,
-		engine:        script.NewEngine(),
-		transport:     transport,
-		capCfg:        cfg.Capture,
-		capStore:      capStore,
-		logger:        logger,
-		failOpenHosts: map[string]struct{}{},
+		cfg:                 cfg,
+		ca:                  caManager,
+		matcher:             domain.NewMatcher(cfg.MITMHosts),
+		bypass:              domain.NewMatcher(cfg.MITMBypassHosts),
+		failOpen:            cfg.MITMFailOpen,
+		rewrite:             cfg.Rewrite,
+		scripts:             cfg.Scripts,
+		udpRules:            cfg.UDPRules,
+		authUser:            strings.TrimSpace(cfg.SOCKSUsername),
+		authPass:            strings.TrimSpace(cfg.SOCKSPassword),
+		engine:              script.NewEngineWithTimeout(cfg.ScriptTimeout),
+		transport:           transport,
+		capCfg:              cfg.Capture,
+		capRedactHeaders:    buildRedactionSet(cfg.Capture.RedactHeaders),
+		capRedactJSONFields: buildRedactionSet(cfg.Capture.RedactJSONFields),
+		capStore:            capStore,
+		logger:              logger,
+		failOpenHosts:       map[string]struct{}{},
 	}
 }
 
@@ -198,6 +230,12 @@ func (s *Server) Stats() Stats {
 		return Stats{}
 	}
 	return Stats{
+		Conn: ConnStats{
+			MaxConns:    s.cfg.MaxConns,
+			ActiveConns: s.connActive.Load(),
+			TotalConns:  s.connTotal.Load(),
+			LimitDrop:   s.connLimitDrop.Load(),
+		},
 		UDP: UDPStats{
 			MaxSessions:    s.cfg.UDPMaxSessions,
 			IdleTimeout:    s.cfg.UDPIdleTimeout.String(),
@@ -248,11 +286,37 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 				errCh <- fmt.Errorf("accept: %w", err)
 				return
 			}
-			go s.handleConn(conn)
+			if !s.tryAcquireConnSlot() {
+				s.connLimitDrop.Add(1)
+				if s.logger != nil {
+					s.logger.Printf("connection rejected by max_conns limit=%d", s.cfg.MaxConns)
+				}
+				_ = conn.Close()
+				continue
+			}
+			s.connTotal.Add(1)
+			go func(c net.Conn) {
+				defer s.releaseConnSlot()
+				s.handleConn(c)
+			}(conn)
 		}
 	}()
 
 	return <-errCh
+}
+
+func (s *Server) tryAcquireConnSlot() bool {
+	cur := s.connActive.Add(1)
+	maxConns := s.cfg.MaxConns
+	if maxConns > 0 && int(cur) > maxConns {
+		s.connActive.Add(-1)
+		return false
+	}
+	return true
+}
+
+func (s *Server) releaseConnSlot() {
+	s.connActive.Add(-1)
 }
 
 func (s *Server) handleConn(client net.Conn) {
@@ -435,10 +499,20 @@ func (s *Server) handleGreeting(conn net.Conn) error {
 	}
 
 	selected := byte(authNoAcceptable)
-	for _, m := range methods {
-		if m == authNoAuth {
-			selected = authNoAuth
-			break
+	requireAuth := s != nil && strings.TrimSpace(s.authUser) != "" && strings.TrimSpace(s.authPass) != ""
+	if requireAuth {
+		for _, m := range methods {
+			if m == authUserPass {
+				selected = authUserPass
+				break
+			}
+		}
+	} else {
+		for _, m := range methods {
+			if m == authNoAuth {
+				selected = authNoAuth
+				break
+			}
 		}
 	}
 	if _, err := conn.Write([]byte{socksVersion5, selected}); err != nil {
@@ -446,6 +520,56 @@ func (s *Server) handleGreeting(conn net.Conn) error {
 	}
 	if selected == authNoAcceptable {
 		return errors.New("no acceptable auth method")
+	}
+	if selected == authUserPass {
+		if err := s.authenticateUserPass(conn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) authenticateUserPass(conn net.Conn) error {
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return err
+	}
+	if header[0] != 0x01 {
+		_, _ = conn.Write([]byte{0x01, 0x01})
+		return fmt.Errorf("invalid auth version: %d", header[0])
+	}
+	userLen := int(header[1])
+	if userLen <= 0 {
+		_, _ = conn.Write([]byte{0x01, 0x01})
+		return errors.New("empty auth username")
+	}
+	userBytes := make([]byte, userLen)
+	if _, err := io.ReadFull(conn, userBytes); err != nil {
+		return err
+	}
+
+	passLenBuf := make([]byte, 1)
+	if _, err := io.ReadFull(conn, passLenBuf); err != nil {
+		return err
+	}
+	passLen := int(passLenBuf[0])
+	if passLen <= 0 {
+		_, _ = conn.Write([]byte{0x01, 0x01})
+		return errors.New("empty auth password")
+	}
+	passBytes := make([]byte, passLen)
+	if _, err := io.ReadFull(conn, passBytes); err != nil {
+		return err
+	}
+
+	userOK := subtle.ConstantTimeCompare(userBytes, []byte(s.authUser)) == 1
+	passOK := subtle.ConstantTimeCompare(passBytes, []byte(s.authPass)) == 1
+	if !userOK || !passOK {
+		_, _ = conn.Write([]byte{0x01, 0x01})
+		return errors.New("socks authentication failed")
+	}
+	if _, err := conn.Write([]byte{0x01, 0x00}); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1101,14 +1225,14 @@ func (s *Server) captureTransaction(req *http.Request, resp *http.Response, upst
 		DurationMs: time.Since(started).Milliseconds(),
 		Method:     req.Method,
 		URL:        requestFullURL(req),
-		ReqHeaders: headerToMap(req.Header),
+		ReqHeaders: s.redactHeaders(headerToMap(req.Header)),
 		Rule:       rule,
 		Error:      errMsg,
 	}
 	if upstream != nil {
 		entry.UpstreamRespStatus = upstream.Status
-		entry.UpstreamRespHeaders = cloneHeaderMap(upstream.Headers)
-		entry.UpstreamRespBody = upstream.Body
+		entry.UpstreamRespHeaders = s.redactHeaders(cloneHeaderMap(upstream.Headers))
+		entry.UpstreamRespBody = s.redactBody(upstream.Body, upstream.Headers)
 		if upstream.ReadErr != nil && entry.Error == "" {
 			entry.Error = upstream.ReadErr.Error()
 		}
@@ -1116,12 +1240,13 @@ func (s *Server) captureTransaction(req *http.Request, resp *http.Response, upst
 
 	if resp != nil {
 		entry.RespStatus = resp.StatusCode
-		entry.RespHeaders = headerToMap(resp.Header)
+		respHeaders := headerToMap(resp.Header)
+		entry.RespHeaders = s.redactHeaders(respHeaders)
 		body, bodyErr := s.peekResponseBody(resp)
 		if bodyErr != nil && entry.Error == "" {
 			entry.Error = bodyErr.Error()
 		}
-		entry.RespBody = body
+		entry.RespBody = s.redactBody(body, respHeaders)
 	}
 	if upstream != nil && resp != nil {
 		entry.RespModified = entry.UpstreamRespStatus != entry.RespStatus ||
@@ -1206,6 +1331,86 @@ func cloneHeaderMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func buildRedactionSet(items []string) map[string]struct{} {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		k := strings.ToLower(strings.TrimSpace(item))
+		if k == "" {
+			continue
+		}
+		out[k] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (s *Server) redactHeaders(headers map[string]string) map[string]string {
+	if headers == nil {
+		return nil
+	}
+	out := cloneHeaderMap(headers)
+	if len(s.capRedactHeaders) == 0 {
+		return out
+	}
+	for k := range out {
+		if _, ok := s.capRedactHeaders[strings.ToLower(strings.TrimSpace(k))]; ok {
+			out[k] = "[REDACTED]"
+		}
+	}
+	return out
+}
+
+func (s *Server) redactBody(body string, headers map[string]string) string {
+	if strings.TrimSpace(body) == "" || len(s.capRedactJSONFields) == 0 {
+		return body
+	}
+	contentType := ""
+	for k, v := range headers {
+		if strings.EqualFold(k, "Content-Type") {
+			contentType = v
+			break
+		}
+	}
+	if !strings.Contains(strings.ToLower(contentType), "application/json") {
+		return body
+	}
+
+	var node any
+	decoder := json.NewDecoder(strings.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&node); err != nil {
+		return body
+	}
+	redactJSONNode(node, s.capRedactJSONFields)
+	out, err := json.Marshal(node)
+	if err != nil {
+		return body
+	}
+	return string(out)
+}
+
+func redactJSONNode(node any, keys map[string]struct{}) {
+	switch v := node.(type) {
+	case map[string]any:
+		for k, child := range v {
+			if _, ok := keys[strings.ToLower(strings.TrimSpace(k))]; ok {
+				v[k] = "[REDACTED]"
+				continue
+			}
+			redactJSONNode(child, keys)
+		}
+	case []any:
+		for _, child := range v {
+			redactJSONNode(child, keys)
+		}
+	}
 }
 
 func sameHeaderMap(a, b map[string]string) bool {

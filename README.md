@@ -19,10 +19,11 @@
 3. 面向调试与分析的抓包能力（含 HAR 导出）
 
 开发规范见 [docs/ARCHITECTURE.zh-CN.md](./docs/ARCHITECTURE.zh-CN.md)。
+运维手册见 [docs/RUNBOOK.zh-CN.md](./docs/RUNBOOK.zh-CN.md)。
 
 ## Features
 
-- SOCKS5 入口（`NO AUTH` + `CONNECT`）
+- SOCKS5 入口（`NO AUTH` / `USERNAME-PASSWORD` + `CONNECT`）
 - MITM 策略：
   - 按域名列表（`mitm.hosts` / `--mitm-hosts`）
   - 全量 443（`mitm.all` / `--mitm-all`）
@@ -40,6 +41,7 @@
 - 抓包能力：
   - Admin API 实时查看
   - 导出 HAR
+  - Header/JSON 字段脱敏
   - 同时记录上游原始响应与最终响应（含 `RespModified`）
 - 发布产物包含默认 `config.yaml` 与本地 `modules/`
 
@@ -69,7 +71,10 @@
 - systemd unit: `/etc/systemd/system/gomitm.service`
 
 ```bash
+# 安装/更新
 sudo bash -c "$(curl -L https://github.com/ygcaicn/gomitm/raw/main/install-release.sh)" @ install
+
+# 卸载
 sudo bash -c "$(curl -L https://github.com/ygcaicn/gomitm/raw/main/install-release.sh)" @ remove
 ```
 
@@ -117,7 +122,11 @@ go build -o ./gomitm ./cmd/gomitm
 
 - `serve.listen`: SOCKS5 监听地址
 - `serve.admin_listen`: Admin API 监听地址
+- `serve.admin_token`: Admin API Bearer Token（非 loopback 强制要求）
 - `serve.ca_dir`: CA 存储目录
+- `serve.script_timeout`: 脚本执行超时（如 `200ms`）
+- `serve.max_conns`: 全局并发连接上限（防止进程被打爆）
+- `serve.socks_username` / `serve.socks_password`: SOCKS5 用户认证
 - `mitm.all`: 是否全量 MITM 所有 `443` 目标
 - `mitm.fail_open`: MITM 失败时是否回退为直连透传
 - `mitm.hosts`: 域名匹配 MITM 列表（`mitm.all=false` 时生效）
@@ -131,7 +140,7 @@ go build -o ./gomitm ./cmd/gomitm
 modules:
   - name: GoogleHomeFunDemo
     enable: true
-    path: "./modules/google-home-fun.sgmodule" # 也支持 https:// URL
+    path: "./modules/google-home-fun.sgmodule" # 也支持 https:// URL（仅 HTTPS）
     arguments:
       文案: "今天也要快乐摸鱼"
   - name: YouTubeWebLite
@@ -145,6 +154,7 @@ modules:
 
 1. `modules[].path` 为相对路径时，相对 `config.yaml` 所在目录
 2. `.sgmodule` 内 `script-path` 为相对路径时，相对该 `.sgmodule` 文件所在目录
+3. 远程模块与远程脚本仅允许 `https://`
 
 ## Demo Modules
 
@@ -159,8 +169,17 @@ modules:
 ## Admin API
 
 - `GET /healthz`：健康检查
+- `GET /api/metrics`：Prometheus 文本指标
 - `GET /api/captures?limit=100`：抓包列表
 - `GET /api/captures.har`：实时 HAR 导出
+- 当配置 `serve.admin_token` 后，`/api/*` 需带 `Authorization: Bearer <token>`
+
+## Security Defaults
+
+- 默认监听 `127.0.0.1:1080`
+- 当 SOCKS5 监听到非 loopback 地址时，必须配置 `socks_username/socks_password`
+- 当 Admin API 监听到非 loopback 地址时，必须配置 `admin_token`
+- 默认启用全局并发连接上限（`max_conns`）
 
 ## Capture Model
 
@@ -172,6 +191,8 @@ modules:
 并带有：
 
 - `RespModified`: 标记是否发生响应修改
+- `capture.redact_headers`: 敏感头脱敏列表（默认含 Authorization/Cookie 等）
+- `capture.redact_json_fields`: JSON 响应体敏感字段脱敏列表（可选，默认已给出常见字段）
 
 ## Development
 
@@ -200,7 +221,7 @@ go test -run '^$' -bench . -benchmem ./internal/capture ./internal/module ./inte
 
 触发方式：
 
-1. `push main` / `pull_request main`：测试 + 构建冒烟
+1. `push main` / `pull_request main`：`go test` + `go test -race` + `go vet` + 覆盖率门禁 + 构建冒烟
 2. `push tag v*`：交叉编译并发布 Release
    - 包含 OpenWrt 目标：`openwrt_amd64` / `openwrt_armv7` / `openwrt_arm64` / `openwrt_mips_softfloat` / `openwrt_mipsle_softfloat`
 3. `workflow_dispatch`：支持手动触发发布

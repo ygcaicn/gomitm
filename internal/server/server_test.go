@@ -81,6 +81,43 @@ func TestShouldForceIdentityEncoding(t *testing.T) {
 	}
 }
 
+func TestConnectionSlotLimit(t *testing.T) {
+	s := &Server{
+		cfg: Config{
+			MaxConns: 1,
+		},
+	}
+	if !s.tryAcquireConnSlot() {
+		t.Fatal("first acquire should succeed")
+	}
+	if s.tryAcquireConnSlot() {
+		t.Fatal("second acquire should be rejected by max conns")
+	}
+	s.releaseConnSlot()
+	if !s.tryAcquireConnSlot() {
+		t.Fatal("acquire should succeed after release")
+	}
+}
+
+func TestStatsIncludeConnectionCounters(t *testing.T) {
+	s := &Server{
+		cfg: Config{
+			MaxConns: 200,
+		},
+	}
+	s.connActive.Store(3)
+	s.connTotal.Store(11)
+	s.connLimitDrop.Store(2)
+
+	stats := s.Stats()
+	if stats.Conn.MaxConns != 200 {
+		t.Fatalf("max_conns got=%d", stats.Conn.MaxConns)
+	}
+	if stats.Conn.ActiveConns != 3 || stats.Conn.TotalConns != 11 || stats.Conn.LimitDrop != 2 {
+		t.Fatalf("unexpected conn stats: %+v", stats.Conn)
+	}
+}
+
 func TestCaptureTransactionStoresUpstreamAndModified(t *testing.T) {
 	s := &Server{
 		capCfg: capture.Config{
@@ -122,6 +159,62 @@ func TestCaptureTransactionStoresUpstreamAndModified(t *testing.T) {
 	}
 	if !e.RespModified {
 		t.Fatal("resp_modified should be true when upstream and final differ")
+	}
+}
+
+func TestCaptureTransactionRedactsHeadersAndJSONBody(t *testing.T) {
+	s := &Server{
+		capCfg: capture.Config{
+			MaxBodyBytes:     4 * 1024,
+			ContentTypes:     []string{"application/json"},
+			RedactHeaders:    []string{"Authorization", "Set-Cookie"},
+			RedactJSONFields: []string{"token", "password"},
+		},
+		capRedactHeaders:    buildRedactionSet([]string{"Authorization", "Set-Cookie"}),
+		capRedactJSONFields: buildRedactionSet([]string{"token", "password"}),
+		capStore:            capture.NewStore(8),
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com/", nil)
+	req.Header.Set("Authorization", "Bearer abc")
+	req.Header.Set("X-Keep", "ok")
+
+	upstream := &responseSnapshot{
+		Status:  200,
+		Headers: map[string]string{"Content-Type": "application/json", "Set-Cookie": "sid=1"},
+		Body:    `{"token":"upstream","keep":"yes"}`,
+	}
+
+	resp := &http.Response{
+		StatusCode:    200,
+		Header:        make(http.Header),
+		Body:          io.NopCloser(strings.NewReader(`{"token":"final","nested":{"password":"x"},"keep":"ok"}`)),
+		ContentLength: int64(len(`{"token":"final","nested":{"password":"x"},"keep":"ok"}`)),
+		Request:       req,
+	}
+	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Set("Set-Cookie", "sid=2")
+
+	s.captureTransaction(req, resp, upstream, time.Now(), "", "")
+	entries := s.CaptureEntries()
+	if len(entries) != 1 {
+		t.Fatalf("entries len=%d", len(entries))
+	}
+	e := entries[0]
+	if e.ReqHeaders["Authorization"] != "[REDACTED]" {
+		t.Fatalf("request auth header not redacted: %+v", e.ReqHeaders)
+	}
+	if e.UpstreamRespHeaders["Set-Cookie"] != "[REDACTED]" {
+		t.Fatalf("upstream set-cookie not redacted: %+v", e.UpstreamRespHeaders)
+	}
+	if e.RespHeaders["Set-Cookie"] != "[REDACTED]" {
+		t.Fatalf("response set-cookie not redacted: %+v", e.RespHeaders)
+	}
+	if strings.Contains(e.UpstreamRespBody, `"upstream"`) {
+		t.Fatalf("upstream token should be redacted: %s", e.UpstreamRespBody)
+	}
+	if strings.Contains(e.RespBody, `"final"`) || strings.Contains(e.RespBody, `"\"password\":\"x\""`) {
+		t.Fatalf("response json fields should be redacted: %s", e.RespBody)
 	}
 }
 
@@ -346,6 +439,104 @@ func TestReadSocksRequestConnect(t *testing.T) {
 	}
 	if host != "example.com" || port != 443 {
 		t.Fatalf("host/port got=%s:%d", host, port)
+	}
+}
+
+func TestHandleGreetingWithUserPassAuthSuccess(t *testing.T) {
+	s := &Server{
+		authUser: "alice",
+		authPass: "secret",
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.handleGreeting(server)
+	}()
+
+	// greeting with methods: no-auth + username/password
+	if _, err := client.Write([]byte{0x05, 0x02, 0x00, 0x02}); err != nil {
+		t.Fatalf("write greeting failed: %v", err)
+	}
+	methodSel := make([]byte, 2)
+	if _, err := io.ReadFull(client, methodSel); err != nil {
+		t.Fatalf("read method selection failed: %v", err)
+	}
+	if methodSel[0] != 0x05 || methodSel[1] != 0x02 {
+		t.Fatalf("unexpected method selection: %v", methodSel)
+	}
+
+	// RFC1929 auth packet
+	authReq := []byte{
+		0x01,
+		byte(len("alice")),
+		'a', 'l', 'i', 'c', 'e',
+		byte(len("secret")),
+		's', 'e', 'c', 'r', 'e', 't',
+	}
+	if _, err := client.Write(authReq); err != nil {
+		t.Fatalf("write auth packet failed: %v", err)
+	}
+	authResp := make([]byte, 2)
+	if _, err := io.ReadFull(client, authResp); err != nil {
+		t.Fatalf("read auth response failed: %v", err)
+	}
+	if authResp[0] != 0x01 || authResp[1] != 0x00 {
+		t.Fatalf("unexpected auth response: %v", authResp)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("handle greeting failed: %v", err)
+	}
+}
+
+func TestHandleGreetingWithUserPassAuthFailure(t *testing.T) {
+	s := &Server{
+		authUser: "alice",
+		authPass: "secret",
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.handleGreeting(server)
+	}()
+
+	if _, err := client.Write([]byte{0x05, 0x01, 0x02}); err != nil {
+		t.Fatalf("write greeting failed: %v", err)
+	}
+	methodSel := make([]byte, 2)
+	if _, err := io.ReadFull(client, methodSel); err != nil {
+		t.Fatalf("read method selection failed: %v", err)
+	}
+	if methodSel[1] != 0x02 {
+		t.Fatalf("unexpected method selection: %v", methodSel)
+	}
+
+	authReq := []byte{
+		0x01,
+		byte(len("alice")),
+		'a', 'l', 'i', 'c', 'e',
+		byte(len("wrong")),
+		'w', 'r', 'o', 'n', 'g',
+	}
+	if _, err := client.Write(authReq); err != nil {
+		t.Fatalf("write auth packet failed: %v", err)
+	}
+	authResp := make([]byte, 2)
+	if _, err := io.ReadFull(client, authResp); err != nil {
+		t.Fatalf("read auth response failed: %v", err)
+	}
+	if authResp[0] != 0x01 || authResp[1] != 0x01 {
+		t.Fatalf("unexpected auth response: %v", authResp)
+	}
+
+	if err := <-errCh; err == nil {
+		t.Fatal("expected auth failure")
 	}
 }
 

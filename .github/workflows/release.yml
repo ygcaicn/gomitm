@@ -53,8 +53,16 @@ jobs:
 
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
 
-      - name: Run tests
-        run: go test ./...
+      - name: Run quality gates
+        run: |
+          set -euo pipefail
+          go test ./...
+          go test -race ./...
+          go vet ./...
+          go test -coverprofile=coverage.out ./...
+          TOTAL="$(go tool cover -func=coverage.out | awk '/^total:/{gsub("%","",$3); print $3}')"
+          echo "total coverage: ${TOTAL}%"
+          awk -v total="$TOTAL" 'BEGIN { if (total + 0 < 55.0) { exit 1 } }'
 
       - name: Build release binaries
         run: |

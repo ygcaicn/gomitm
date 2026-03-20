@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"gomitm/internal/policy"
 )
@@ -189,5 +190,35 @@ func TestApplyResponseScriptMatchesWhenHostContainsDefaultHTTPSPort(t *testing.T
 	_, _ = buf.ReadFrom(resp.Body)
 	if got := buf.String(); got != "patched" {
 		t.Fatalf("body got=%q", got)
+	}
+}
+
+func TestApplyResponseScriptTimeout(t *testing.T) {
+	engine := NewEngineWithTimeout(20 * time.Millisecond)
+	rule := policy.ScriptRule{
+		Name:         "timeout",
+		Type:         policy.ScriptTypeHTTPResponse,
+		Pattern:      regexp.MustCompile(`^https://example\.com/slow$`),
+		RequiresBody: true,
+		Code:         `while (true) {}`,
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com/slow", nil)
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("origin")),
+		Request:    req,
+	}
+
+	applied, err := engine.ApplyResponseScripts(req, resp, []policy.ScriptRule{rule})
+	if err == nil {
+		t.Fatal("expected script timeout error")
+	}
+	if applied {
+		t.Fatal("timeout script should not be treated as applied")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "timeout") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

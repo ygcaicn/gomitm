@@ -94,3 +94,10 @@ func TestParseRuleLine(t *testing.T) {
 		t.Fatal("expected unsupported rule format to be ignored")
 	}
 }
+
+func TestLoadFromURLRequiresHTTPS(t *testing.T) {
+	_, err := LoadFromURL("http://example.com/demo.sgmodule")
+	if err == nil {
+		t.Fatal("expected http module url to be rejected")
+	}
+}

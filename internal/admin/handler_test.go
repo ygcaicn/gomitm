@@ -104,3 +104,107 @@ func TestStats(t *testing.T) {
 		t.Fatalf("unexpected body: %s", rr.Body.String())
 	}
 }
+
+func TestAdminBearerAuth(t *testing.T) {
+	h := NewHandler(fakeProvider{
+		stats: srvstats.Stats{
+			UDP: srvstats.UDPStats{ActiveSessions: 1},
+		},
+	}, Options{
+		BearerToken: "secret-token",
+	})
+
+	// healthz is intentionally kept open for local probes.
+	{
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("healthz status got=%d", rr.Code)
+		}
+	}
+
+	{
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthorized status got=%d", rr.Code)
+		}
+	}
+
+	{
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+		req.Header.Set("Authorization", "Bearer wrong-token")
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("wrong token status got=%d", rr.Code)
+		}
+	}
+
+	{
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+		req.Header.Set("Authorization", "Bearer secret-token")
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("authorized status got=%d", rr.Code)
+		}
+	}
+
+	{
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/metrics", nil)
+		req.Header.Set("Authorization", "Bearer secret-token")
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("authorized metrics status got=%d", rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "gomitm_udp_sessions_active") {
+			t.Fatalf("unexpected metrics body: %s", rr.Body.String())
+		}
+	}
+}
+
+func TestMetrics(t *testing.T) {
+	h := NewHandler(fakeProvider{
+		stats: srvstats.Stats{
+			Conn: srvstats.ConnStats{
+				ActiveConns: 4,
+				TotalConns:  10,
+				LimitDrop:   1,
+			},
+			UDP: srvstats.UDPStats{
+				ActiveSessions: 2,
+				TotalSessions:  7,
+				PacketsIn:      9,
+			},
+			MITM: srvstats.MITMStats{
+				FailOpenEnabled: true,
+				FailOpenLearned: 3,
+				LearnedBypass:   1,
+			},
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/metrics", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status got=%d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "text/plain") {
+		t.Fatalf("content-type got=%q", ct)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "gomitm_conn_active 4") {
+		t.Fatalf("unexpected metrics body: %s", body)
+	}
+	if !strings.Contains(body, "gomitm_udp_sessions_active 2") {
+		t.Fatalf("unexpected metrics body: %s", body)
+	}
+	if !strings.Contains(body, "gomitm_mitm_fail_open_enabled 1") {
+		t.Fatalf("unexpected metrics body: %s", body)
+	}
+}

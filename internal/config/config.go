@@ -17,8 +17,13 @@ type File struct {
 type Serve struct {
 	Listen         string `yaml:"listen"`
 	AdminListen    string `yaml:"admin_listen"`
+	AdminToken     string `yaml:"admin_token"`
 	CADir          string `yaml:"ca_dir"`
 	DialTimeout    string `yaml:"dial_timeout"`
+	ScriptTimeout  string `yaml:"script_timeout"`
+	SOCKSUsername  string `yaml:"socks_username"`
+	SOCKSPassword  string `yaml:"socks_password"`
+	MaxConns       int    `yaml:"max_conns"`
 	UDPMaxSessions int    `yaml:"udp_max_sessions"`
 	UDPIdleTimeout string `yaml:"udp_idle_timeout"`
 }
@@ -38,11 +43,13 @@ type Module struct {
 }
 
 type Capture struct {
-	Enabled      bool     `yaml:"enabled"`
-	MaxEntries   int      `yaml:"max_entries"`
-	MaxBodyBytes int64    `yaml:"max_body_bytes"`
-	ContentTypes []string `yaml:"content_types"`
-	HAROut       string   `yaml:"har_out"`
+	Enabled          bool     `yaml:"enabled"`
+	MaxEntries       int      `yaml:"max_entries"`
+	MaxBodyBytes     int64    `yaml:"max_body_bytes"`
+	ContentTypes     []string `yaml:"content_types"`
+	RedactHeaders    []string `yaml:"redact_headers"`
+	RedactJSONFields []string `yaml:"redact_json_fields"`
+	HAROut           string   `yaml:"har_out"`
 }
 
 func LoadFile(path string) (*File, error) {

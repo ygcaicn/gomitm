@@ -6,10 +6,12 @@ import (
 )
 
 type Config struct {
-	Enabled      bool
-	MaxEntries   int
-	MaxBodyBytes int64
-	ContentTypes []string
+	Enabled          bool
+	MaxEntries       int
+	MaxBodyBytes     int64
+	ContentTypes     []string
+	RedactHeaders    []string
+	RedactJSONFields []string
 }
 
 type Entry struct {

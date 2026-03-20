@@ -31,6 +31,10 @@ type Source struct {
 	Arguments map[string]string
 }
 
+var newHTTPClient = func(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout}
+}
+
 func LoadAll(urls []string, files []string) (*Parsed, error) {
 	return LoadAllWithArgs(urls, files, nil)
 }
@@ -94,10 +98,13 @@ func LoadFromURL(u string) (*Parsed, error) {
 }
 
 func LoadFromURLWithArgs(u string, args map[string]string) (*Parsed, error) {
-	if !strings.HasPrefix(strings.ToLower(u), "http://") && !strings.HasPrefix(strings.ToLower(u), "https://") {
-		return nil, fmt.Errorf("module url must start with http/https: %s", u)
+	if !isURL(u) {
+		return nil, fmt.Errorf("module url must start with https://: %s", u)
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	if !isHTTPSURL(u) {
+		return nil, fmt.Errorf("module url must use https://: %s", u)
+	}
+	client := newHTTPClient(15 * time.Second)
 	resp, err := client.Get(u)
 	if err != nil {
 		return nil, fmt.Errorf("fetch module %s: %w", u, err)
@@ -498,7 +505,7 @@ func (p *Parsed) LoadScriptCode() error {
 		return nil
 	}
 	cache := make(map[string]string)
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := newHTTPClient(20 * time.Second)
 	for i := range p.Scripts {
 		path := strings.TrimSpace(p.Scripts[i].ScriptPath)
 		if path == "" {
@@ -520,7 +527,10 @@ func (p *Parsed) LoadScriptCode() error {
 
 func readScriptCode(client *http.Client, path string) (string, error) {
 	lower := strings.ToLower(path)
-	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+	if strings.HasPrefix(lower, "http://") {
+		return "", fmt.Errorf("script url must use https://: %s", path)
+	}
+	if strings.HasPrefix(lower, "https://") {
 		resp, err := client.Get(path)
 		if err != nil {
 			return "", err
@@ -546,6 +556,11 @@ func readScriptCode(client *http.Client, path string) (string, error) {
 func isURL(v string) bool {
 	lower := strings.ToLower(strings.TrimSpace(v))
 	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+}
+
+func isHTTPSURL(v string) bool {
+	lower := strings.ToLower(strings.TrimSpace(v))
+	return strings.HasPrefix(lower, "https://")
 }
 
 func cloneArgs(in map[string]string) map[string]string {

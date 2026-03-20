@@ -2,6 +2,7 @@ package script
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,7 +20,11 @@ import (
 	"github.com/dop251/goja"
 )
 
-type Engine struct{}
+const defaultScriptTimeout = 200 * time.Millisecond
+
+type Engine struct {
+	scriptTimeout time.Duration
+}
 
 var (
 	compatStoreMu sync.RWMutex
@@ -28,7 +33,14 @@ var (
 )
 
 func NewEngine() *Engine {
-	return &Engine{}
+	return NewEngineWithTimeout(defaultScriptTimeout)
+}
+
+func NewEngineWithTimeout(timeout time.Duration) *Engine {
+	if timeout <= 0 {
+		timeout = defaultScriptTimeout
+	}
+	return &Engine{scriptTimeout: timeout}
 }
 
 func (e *Engine) ApplyRequestScripts(req *http.Request, rules []policy.ScriptRule) (bool, error) {
@@ -57,7 +69,7 @@ func (e *Engine) ApplyRequestScripts(req *http.Request, rules []policy.ScriptRul
 			}
 		}
 
-		changed, err := executeRequestScript(rule, req, bodyBytes)
+		changed, err := executeRequestScript(rule, req, bodyBytes, e.scriptTimeout)
 		if err != nil {
 			return applied, fmt.Errorf("script %s: %w", rule.Name, err)
 		}
@@ -91,7 +103,7 @@ func (e *Engine) ApplyResponseScripts(req *http.Request, resp *http.Response, ru
 			continue
 		}
 
-		newResp, changed, err := executeResponseScript(rule, req, resp, bodyBytes)
+		newResp, changed, err := executeResponseScript(rule, req, resp, bodyBytes, e.scriptTimeout)
 		if err != nil {
 			return applied, fmt.Errorf("script %s: %w", rule.Name, err)
 		}
@@ -103,7 +115,7 @@ func (e *Engine) ApplyResponseScripts(req *http.Request, resp *http.Response, ru
 	return applied, nil
 }
 
-func executeRequestScript(rule policy.ScriptRule, req *http.Request, body []byte) (bool, error) {
+func executeRequestScript(rule policy.ScriptRule, req *http.Request, body []byte, timeout time.Duration) (bool, error) {
 	vm := goja.New()
 	if err := installSurgeCompat(vm); err != nil {
 		return false, err
@@ -147,7 +159,7 @@ func executeRequestScript(rule policy.ScriptRule, req *http.Request, body []byte
 		return false, err
 	}
 
-	if _, err := vm.RunString(rule.Code); err != nil {
+	if _, err := runScriptWithTimeout(vm, rule.Code, timeout); err != nil {
 		return false, err
 	}
 	if !doneCalled {
@@ -204,7 +216,7 @@ func executeRequestScript(rule policy.ScriptRule, req *http.Request, body []byte
 	return true, nil
 }
 
-func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http.Response, body []byte) (*http.Response, bool, error) {
+func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http.Response, body []byte, timeout time.Duration) (*http.Response, bool, error) {
 	vm := goja.New()
 	if err := installSurgeCompat(vm); err != nil {
 		return nil, false, err
@@ -256,7 +268,7 @@ func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http
 		return nil, false, err
 	}
 
-	if _, err := vm.RunString(rule.Code); err != nil {
+	if _, err := runScriptWithTimeout(vm, rule.Code, timeout); err != nil {
 		return nil, false, err
 	}
 	if !doneCalled {
@@ -297,6 +309,43 @@ func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http
 	}
 	out.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	return out, true, nil
+}
+
+func runScriptWithTimeout(vm *goja.Runtime, code string, timeout time.Duration) (goja.Value, error) {
+	if vm == nil {
+		return nil, errors.New("nil vm")
+	}
+	if timeout <= 0 {
+		return vm.RunString(code)
+	}
+	type scriptResult struct {
+		value goja.Value
+		err   error
+	}
+	done := make(chan scriptResult, 1)
+	go func() {
+		v, err := vm.RunString(code)
+		done <- scriptResult{value: v, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case res := <-done:
+		return res.value, res.err
+	case <-timer.C:
+		vm.Interrupt(errors.New("script timeout"))
+		res := <-done
+		if res.err == nil {
+			return nil, fmt.Errorf("script timeout after %s", timeout)
+		}
+		errText := strings.ToLower(res.err.Error())
+		if strings.Contains(errText, "interrupted") || strings.Contains(errText, "script timeout") {
+			return nil, fmt.Errorf("script timeout after %s", timeout)
+		}
+		return nil, res.err
+	}
 }
 
 func readAndResetBody(resp *http.Response) ([]byte, error) {

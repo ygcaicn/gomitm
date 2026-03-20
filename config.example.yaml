@@ -1,8 +1,13 @@
 serve:
-  listen: ":1080"
+  listen: "127.0.0.1:1080"
   admin_listen: "127.0.0.1:19090"
+  # admin_token: "change-me"
   ca_dir: "~/.gomitm/ca"
   dial_timeout: "10s"
+  script_timeout: "200ms"
+  max_conns: 4096
+  # socks_username: "change-me"
+  # socks_password: "change-me"
 
 mitm:
   all: false
@@ -39,4 +44,20 @@ capture:
   content_types:
     - "application/json"
     - "text/*"
+  redact_headers:
+    - "Authorization"
+    - "Proxy-Authorization"
+    - "Cookie"
+    - "Set-Cookie"
+  redact_json_fields:
+    - "password"
+    - "passwd"
+    - "pwd"
+    - "token"
+    - "access_token"
+    - "refresh_token"
+    - "secret"
+    - "api_key"
+    - "apikey"
+    - "session"
   har_out: "./tmp/session.har"
