@@ -212,7 +212,7 @@ install_release() {
   local url="https://github.com/${REPO}/releases/download/${version}/${asset}"
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  trap 'rm -rf "${tmpdir:-}"' EXIT
 
   log "Installing ${APP} ${version} (${arch})"
   log "Downloading: ${url}"
@@ -247,7 +247,12 @@ install_release() {
   write_service
 
   systemctl daemon-reload
-  systemctl enable --now "$SERVICE_NAME"
+  systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    systemctl restart "$SERVICE_NAME"
+  else
+    systemctl start "$SERVICE_NAME"
+  fi
 
   log "Install completed."
   log "Binary: $INSTALL_BIN"
