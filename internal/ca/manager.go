@@ -29,6 +29,7 @@ const (
 
 	rootCACommonNamePrefix = "GoMITM Root CA"
 	rootCertNameTimeLayout = "20060102-150405"
+	leafRenewBefore        = 5 * time.Minute
 )
 
 type Manager struct {
@@ -202,7 +203,7 @@ func (m *Manager) GetLeafCertificate(host string) (tls.Certificate, error) {
 	m.mu.RLock()
 	cached, ok := m.cache[host]
 	m.mu.RUnlock()
-	if ok {
+	if ok && isLeafCertUsable(cached, time.Now()) {
 		return cached, nil
 	}
 
@@ -263,7 +264,29 @@ func (m *Manager) signLeaf(host string) (tls.Certificate, error) {
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("build tls leaf pair: %w", err)
 	}
+	cert.Leaf, _ = x509.ParseCertificate(d)
 	return cert, nil
+}
+
+func isLeafCertUsable(cert tls.Certificate, now time.Time) bool {
+	leaf := cert.Leaf
+	if leaf == nil {
+		if len(cert.Certificate) == 0 {
+			return false
+		}
+		parsed, err := x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			return false
+		}
+		leaf = parsed
+	}
+	if now.Before(leaf.NotBefore) {
+		return false
+	}
+	if now.Add(leafRenewBefore).After(leaf.NotAfter) {
+		return false
+	}
+	return true
 }
 
 func initCA(dir string) (*Manager, error) {
