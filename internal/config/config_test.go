@@ -16,6 +16,7 @@ serve:
   admin_token: "demo-admin-token"
   ca_dir: "~/.gomitm/ca"
   dial_timeout: "12s"
+  upstream_proxy: "socks5://127.0.0.1:40000"
   script_timeout: "250ms"
   socks_username: "alice"
   socks_password: "secret"
@@ -73,6 +74,9 @@ capture:
 	}
 	if cfg.Serve.ScriptTimeout != "250ms" {
 		t.Fatalf("script timeout got=%q", cfg.Serve.ScriptTimeout)
+	}
+	if cfg.Serve.UpstreamProxy != "socks5://127.0.0.1:40000" {
+		t.Fatalf("upstream proxy got=%q", cfg.Serve.UpstreamProxy)
 	}
 	if cfg.Serve.SOCKSUsername != "alice" || cfg.Serve.SOCKSPassword != "secret" {
 		t.Fatalf("socks auth got user=%q pass=%q", cfg.Serve.SOCKSUsername, cfg.Serve.SOCKSPassword)

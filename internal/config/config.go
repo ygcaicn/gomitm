@@ -20,6 +20,7 @@ type Serve struct {
 	AdminToken     string `yaml:"admin_token"`
 	CADir          string `yaml:"ca_dir"`
 	DialTimeout    string `yaml:"dial_timeout"`
+	UpstreamProxy  string `yaml:"upstream_proxy"`
 	ScriptTimeout  string `yaml:"script_timeout"`
 	SOCKSUsername  string `yaml:"socks_username"`
 	SOCKSPassword  string `yaml:"socks_password"`

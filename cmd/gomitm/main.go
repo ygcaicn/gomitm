@@ -54,6 +54,7 @@ type serveOptions struct {
 	AdminToken     string
 	CADir          string
 	DialTimeout    time.Duration
+	UpstreamProxy  string
 	ScriptTimeout  time.Duration
 	MaxConns       int
 	SOCKSUsername  string
@@ -153,6 +154,7 @@ func runServe(args []string) error {
 	}
 	log.Printf("policy loaded: mitm_hosts=%d mitm_bypass_hosts=%d rewrite_rules=%d scripts=%d udp_rules=%d", len(hosts), len(opts.MITMBypassHosts), len(rewriteRules), len(scriptRules), len(udpRules))
 	log.Printf("connection config: max_conns=%d", opts.MaxConns)
+	log.Printf("upstream config: socks5=%q", opts.UpstreamProxy)
 	log.Printf("udp config: max_sessions=%d idle_timeout=%s", opts.UDPMaxSessions, opts.UDPIdleTimeout)
 	log.Printf("script config: timeout=%s", opts.ScriptTimeout)
 	log.Printf("capture config: enabled=%v max_entries=%d max_body_bytes=%d har_out=%q redact_headers=%d redact_json_fields=%d", opts.CaptureEnabled, opts.CaptureMaxEntries, opts.CaptureMaxBodyBytes, opts.HAROut, len(opts.CaptureRedactHdrs), len(opts.CaptureRedactJSON))
@@ -164,6 +166,7 @@ func runServe(args []string) error {
 		MaxConns:        opts.MaxConns,
 		SOCKSUsername:   opts.SOCKSUsername,
 		SOCKSPassword:   opts.SOCKSPassword,
+		UpstreamProxy:   opts.UpstreamProxy,
 		UDPMaxSessions:  opts.UDPMaxSessions,
 		UDPIdleTimeout:  opts.UDPIdleTimeout,
 		MITMHosts:       hosts,
@@ -237,6 +240,7 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	moduleFiles := fs.String("module-files", "", "comma-separated local sgmodule file paths")
 	moduleArgs := fs.String("module-args", "", "module argument overrides, e.g. key1=value1,key2=true")
 	dialTimeout := fs.String("dial-timeout", "", "upstream dial timeout (e.g. 10s)")
+	upstreamProxy := fs.String("upstream-proxy", "", "SOCKS5 upstream proxy (socks5://host:port or host:port)")
 	scriptTimeout := fs.String("script-timeout", "", "script execution timeout (e.g. 200ms)")
 	maxConns := fs.Int("max-conns", 0, "max concurrent client connections (global)")
 	udpMaxSessions := fs.Int("udp-max-sessions", 0, "max active UDP ASSOCIATE sessions")
@@ -340,6 +344,9 @@ func parseServeOptions(args []string) (serveOptions, error) {
 		}
 		opts.DialTimeout = d
 	}
+	if visited["upstream-proxy"] {
+		opts.UpstreamProxy = strings.TrimSpace(*upstreamProxy)
+	}
 	if visited["script-timeout"] {
 		d, err := time.ParseDuration(strings.TrimSpace(*scriptTimeout))
 		if err != nil {
@@ -439,6 +446,9 @@ func applyConfigFile(opts *serveOptions, cfg *config.File) error {
 	}
 	if cfg.Serve.CADir != "" {
 		opts.CADir = strings.TrimSpace(cfg.Serve.CADir)
+	}
+	if strings.TrimSpace(cfg.Serve.UpstreamProxy) != "" {
+		opts.UpstreamProxy = strings.TrimSpace(cfg.Serve.UpstreamProxy)
 	}
 	if cfg.Serve.SOCKSUsername != "" {
 		opts.SOCKSUsername = strings.TrimSpace(cfg.Serve.SOCKSUsername)
@@ -650,6 +660,9 @@ func dedupStrings(in []string) []string {
 }
 
 func validateServeOptions(opts serveOptions) error {
+	if err := server.ValidateUpstreamProxy(opts.UpstreamProxy); err != nil {
+		return err
+	}
 	userSet := strings.TrimSpace(opts.SOCKSUsername) != ""
 	passSet := strings.TrimSpace(opts.SOCKSPassword) != ""
 	if userSet != passSet {

@@ -4,6 +4,8 @@ serve:
   # admin_token: "change-me"
   ca_dir: "~/.gomitm/ca"
   dial_timeout: "10s"
+  # Optional SOCKS5 egress proxy. Supports socks5://[user:pass@]host:port or host:port.
+  # upstream_proxy: "socks5://127.0.0.1:40000"
   script_timeout: "200ms"
   max_conns: 4096
   # socks_username: "change-me"

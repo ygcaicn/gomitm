@@ -27,6 +27,7 @@ func TestParseServeOptionsWithConfigAndCLIOverride(t *testing.T) {
 serve:
   listen: "127.0.0.1:2080"
   dial_timeout: "12s"
+  upstream_proxy: "127.0.0.1:40000"
   max_conns: 1500
   udp_max_sessions: 777
   udp_idle_timeout: "90s"
@@ -66,6 +67,9 @@ capture:
 	}
 	if opts.DialTimeout.String() != "12s" {
 		t.Fatalf("dial timeout got=%s", opts.DialTimeout)
+	}
+	if opts.UpstreamProxy != "127.0.0.1:40000" {
+		t.Fatalf("upstream proxy got=%q", opts.UpstreamProxy)
 	}
 	if opts.MaxConns != 1500 {
 		t.Fatalf("max conns got=%d", opts.MaxConns)

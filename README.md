@@ -124,6 +124,7 @@ go build -o ./gomitm ./cmd/gomitm
 - `serve.admin_listen`: Admin API 监听地址
 - `serve.admin_token`: Admin API Bearer Token（非 loopback 强制要求）
 - `serve.ca_dir`: CA 存储目录
+- `serve.upstream_proxy`: 可选 SOCKS5 上游出口，支持 `socks5://[user:pass@]host:port` 或 `host:port`
 - `serve.script_timeout`: 脚本执行超时（如 `200ms`）
 - `serve.max_conns`: 全局并发连接上限（防止进程被打爆）
 - `serve.socks_username` / `serve.socks_password`: SOCKS5 用户认证

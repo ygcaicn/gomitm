@@ -37,6 +37,8 @@ serve:
   admin_token: "change-me"
   socks_username: "change-me"
   socks_password: "change-me"
+  # 可选：所有 TCP 出站（直连透传和 MITM HTTP）经 SOCKS5 上游
+  # upstream_proxy: "socks5://127.0.0.1:40000"
   max_conns: 4096
 ```
 

@@ -56,6 +56,7 @@ const (
 type Config struct {
 	ListenAddr      string
 	DialTimeout     time.Duration
+	UpstreamProxy   string
 	ScriptTimeout   time.Duration
 	MaxConns        int
 	SOCKSUsername   string
@@ -85,6 +86,7 @@ type Server struct {
 	authPass            string
 	engine              *script.Engine
 	transport           *http.Transport
+	upstream            *socks5Dialer
 	capCfg              capture.Config
 	capRedactHeaders    map[string]struct{}
 	capRedactJSONFields map[string]struct{}
@@ -185,9 +187,17 @@ func New(cfg Config, caManager *ca.Manager, logger *log.Logger) *Server {
 	if cfg.Capture.Enabled {
 		capStore = capture.NewStore(cfg.Capture.MaxEntries)
 	}
+	upstream, upstreamErr := newSOCKS5Dialer(cfg.UpstreamProxy, cfg.DialTimeout)
+	if upstreamErr != nil && logger != nil {
+		logger.Printf("invalid upstream proxy %q: %v; using direct egress", cfg.UpstreamProxy, upstreamErr)
+	}
+	dialContext := (&net.Dialer{Timeout: cfg.DialTimeout, KeepAlive: 30 * time.Second}).DialContext
+	if upstream != nil {
+		dialContext = upstream.DialContext
+	}
 	transport := &http.Transport{
 		Proxy:                 nil,
-		DialContext:           (&net.Dialer{Timeout: cfg.DialTimeout, KeepAlive: 30 * time.Second}).DialContext,
+		DialContext:           dialContext,
 		ForceAttemptHTTP2:     false,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -209,6 +219,7 @@ func New(cfg Config, caManager *ca.Manager, logger *log.Logger) *Server {
 		authPass:            strings.TrimSpace(cfg.SOCKSPassword),
 		engine:              script.NewEngineWithTimeout(cfg.ScriptTimeout),
 		transport:           transport,
+		upstream:            upstream,
 		capCfg:              cfg.Capture,
 		capRedactHeaders:    buildRedactionSet(cfg.Capture.RedactHeaders),
 		capRedactJSONFields: buildRedactionSet(cfg.Capture.RedactJSONFields),
@@ -385,7 +396,7 @@ func (s *Server) handleConn(client net.Conn) {
 		return
 	}
 
-	upstream, err := (&net.Dialer{Timeout: s.cfg.DialTimeout, KeepAlive: 30 * time.Second}).Dial("tcp", target)
+	upstream, err := s.dialContext(context.Background(), "tcp", target)
 	if err != nil {
 		_ = writeReply(client, repHostUnreachable, nil, 0)
 		s.logger.Printf("client=%s dial failed %s: %v", clientAddr, target, err)
@@ -401,6 +412,13 @@ func (s *Server) handleConn(client net.Conn) {
 
 	s.logger.Printf("client=%s TCP %s", clientAddr, target)
 	proxyTCP(client, upstream)
+}
+
+func (s *Server) dialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if s != nil && s.upstream != nil {
+		return s.upstream.DialContext(ctx, network, address)
+	}
+	return (&net.Dialer{Timeout: s.cfg.DialTimeout, KeepAlive: 30 * time.Second}).DialContext(ctx, network, address)
 }
 
 func remoteAddress(conn net.Conn) string {
