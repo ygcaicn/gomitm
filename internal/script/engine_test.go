@@ -160,6 +160,51 @@ $done({ url: "https://example.com/newpath", headers: h, method: "POST" });
 	}
 }
 
+func TestApplyRequestScriptTreatsEmptyArgumentAsUndefined(t *testing.T) {
+	engine := NewEngine()
+	rule := policy.ScriptRule{
+		Name:    "youtube.request.log_event",
+		Type:    policy.ScriptTypeHTTPRequest,
+		Pattern: regexp.MustCompile(`^https://youtubei\.googleapis\.com/youtubei/v1/log_event$`),
+		Code: `
+function decodeParams(value) {
+	return typeof $argument === "string" && !$argument.includes("{{{")
+		? Object.assign(value, JSON.parse($argument))
+		: value;
+}
+decodeParams({});
+$done({});
+`,
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, "https://youtubei.googleapis.com/youtubei/v1/log_event", strings.NewReader(""))
+	if _, err := engine.ApplyRequestScripts(req, []policy.ScriptRule{rule}); err != nil {
+		t.Fatalf("empty argument should not be parsed: %v", err)
+	}
+}
+
+func TestApplyRequestScriptParsesNonEmptyArgument(t *testing.T) {
+	engine := NewEngine()
+	rule := policy.ScriptRule{
+		Name:     "request-with-argument",
+		Type:     policy.ScriptTypeHTTPRequest,
+		Pattern:  regexp.MustCompile(`^https://example\.com/argument$`),
+		Argument: `{"enabled":true}`,
+		Code: `
+const argument = JSON.parse($argument);
+$done({ headers: {"x-enabled": String(argument.enabled)} });
+`,
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, "https://example.com/argument", nil)
+	if _, err := engine.ApplyRequestScripts(req, []policy.ScriptRule{rule}); err != nil {
+		t.Fatalf("non-empty argument should remain parseable: %v", err)
+	}
+	if got := req.Header.Get("x-enabled"); got != "true" {
+		t.Fatalf("x-enabled got=%q want=%q", got, "true")
+	}
+}
+
 func TestApplyResponseScriptMatchesWhenHostContainsDefaultHTTPSPort(t *testing.T) {
 	engine := NewEngine()
 	rule := policy.ScriptRule{

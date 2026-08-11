@@ -139,7 +139,7 @@ func executeRequestScript(rule policy.ScriptRule, req *http.Request, body []byte
 	if err := vm.Set("$request", requestObj); err != nil {
 		return false, err
 	}
-	if err := vm.Set("$argument", rule.Argument); err != nil {
+	if err := setScriptArgument(vm, rule.Argument); err != nil {
 		return false, err
 	}
 
@@ -248,7 +248,7 @@ func executeResponseScript(rule policy.ScriptRule, req *http.Request, resp *http
 	if err := vm.Set("$response", responseObj); err != nil {
 		return nil, false, err
 	}
-	if err := vm.Set("$argument", rule.Argument); err != nil {
+	if err := setScriptArgument(vm, rule.Argument); err != nil {
 		return nil, false, err
 	}
 
@@ -403,6 +403,13 @@ func fullURL(req *http.Request) string {
 	}
 	host = normalizeHTTPSHost(host)
 	return "https://" + host + req.URL.RequestURI()
+}
+
+func setScriptArgument(vm *goja.Runtime, argument string) error {
+	if strings.TrimSpace(argument) == "" {
+		return vm.Set("$argument", goja.Undefined())
+	}
+	return vm.Set("$argument", argument)
 }
 
 func normalizeHTTPSHost(host string) string {
