@@ -289,7 +289,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			if !s.tryAcquireConnSlot() {
 				s.connLimitDrop.Add(1)
 				if s.logger != nil {
-					s.logger.Printf("connection rejected by max_conns limit=%d", s.cfg.MaxConns)
+					s.logger.Printf("client=%s connection rejected by max_conns limit=%d", remoteAddress(conn), s.cfg.MaxConns)
 				}
 				_ = conn.Close()
 				continue
@@ -321,15 +321,16 @@ func (s *Server) releaseConnSlot() {
 
 func (s *Server) handleConn(client net.Conn) {
 	defer client.Close()
+	clientAddr := remoteAddress(client)
 
 	if err := s.handleGreeting(client); err != nil {
-		s.logger.Printf("socks greeting failed: %v", err)
+		s.logger.Printf("client=%s socks greeting failed: %v", clientAddr, err)
 		return
 	}
 
 	cmd, host, port, err := s.readSocksRequest(client)
 	if err != nil {
-		s.logger.Printf("socks request failed: %v", err)
+		s.logger.Printf("client=%s socks request failed: %v", clientAddr, err)
 		return
 	}
 
@@ -343,13 +344,13 @@ func (s *Server) handleConn(client net.Conn) {
 			s.udpSessionsActive.Add(-1)
 			s.udpSessionLimitDrop.Add(1)
 			_ = writeReply(client, repGeneralFailure, nil, 0)
-			s.logger.Printf("udp associate rejected by session limit: active=%d limit=%d", cur-1, maxSessions)
+			s.logger.Printf("client=%s udp associate rejected by session limit: active=%d limit=%d", clientAddr, cur-1, maxSessions)
 			return
 		}
 		defer s.udpSessionsActive.Add(-1)
 		s.udpSessionsTotal.Add(1)
 		if err := s.handleUDPAssociate(client, host, port); err != nil {
-			s.logger.Printf("udp associate failed: %v", err)
+			s.logger.Printf("client=%s udp associate failed: %v", clientAddr, err)
 		}
 		return
 	}
@@ -357,12 +358,12 @@ func (s *Server) handleConn(client net.Conn) {
 	target := net.JoinHostPort(host, strconv.Itoa(port))
 	if isBuiltinCAPortalHost(host) && port == 80 {
 		if err := writeReply(client, repSucceeded, nil, 0); err != nil {
-			s.logger.Printf("write socks reply failed: %v", err)
+			s.logger.Printf("client=%s write socks reply failed: %v", clientAddr, err)
 			return
 		}
-		s.logger.Printf("builtin CA HTTP portal %s", target)
+		s.logger.Printf("client=%s builtin CA HTTP portal %s", clientAddr, target)
 		if err := s.handleBuiltinCAHTTPPortal(client, host); err != nil {
-			s.logger.Printf("builtin ca http portal failed for %s: %v", target, err)
+			s.logger.Printf("client=%s builtin ca http portal failed for %s: %v", clientAddr, target, err)
 		}
 		return
 	}
@@ -370,15 +371,15 @@ func (s *Server) handleConn(client net.Conn) {
 
 	if useMITM {
 		if err := writeReply(client, repSucceeded, nil, 0); err != nil {
-			s.logger.Printf("write socks reply failed: %v", err)
+			s.logger.Printf("client=%s write socks reply failed: %v", clientAddr, err)
 			return
 		}
-		s.logger.Printf("MITM %s", target)
+		s.logger.Printf("client=%s MITM %s", clientAddr, target)
 		if err := s.handleMITM(client, host, port); err != nil {
-			s.logger.Printf("mitm failed for %s: %v", target, err)
+			s.logger.Printf("client=%s mitm failed for %s: %v", clientAddr, target, err)
 			if s.failOpen && shouldFailOpenMITMError(err) {
 				s.learnFailOpenHost(host)
-				s.logger.Printf("mitm fail-open learned bypass host=%s", normalizeHost(host))
+				s.logger.Printf("client=%s mitm fail-open learned bypass host=%s", clientAddr, normalizeHost(host))
 			}
 		}
 		return
@@ -387,19 +388,26 @@ func (s *Server) handleConn(client net.Conn) {
 	upstream, err := (&net.Dialer{Timeout: s.cfg.DialTimeout, KeepAlive: 30 * time.Second}).Dial("tcp", target)
 	if err != nil {
 		_ = writeReply(client, repHostUnreachable, nil, 0)
-		s.logger.Printf("dial failed %s: %v", target, err)
+		s.logger.Printf("client=%s dial failed %s: %v", clientAddr, target, err)
 		return
 	}
 	defer upstream.Close()
 
 	bindIP, bindPort := addrFrom(upstream.LocalAddr())
 	if err := writeReply(client, repSucceeded, bindIP, bindPort); err != nil {
-		s.logger.Printf("write socks reply failed: %v", err)
+		s.logger.Printf("client=%s write socks reply failed: %v", clientAddr, err)
 		return
 	}
 
-	s.logger.Printf("TCP %s", target)
+	s.logger.Printf("client=%s TCP %s", clientAddr, target)
 	proxyTCP(client, upstream)
+}
+
+func remoteAddress(conn net.Conn) string {
+	if conn == nil || conn.RemoteAddr() == nil {
+		return "unknown"
+	}
+	return conn.RemoteAddr().String()
 }
 
 func (s *Server) shouldMITM(host string, port int) bool {
@@ -606,6 +614,7 @@ func (s *Server) readSocksRequest(conn net.Conn) (byte, string, int, error) {
 }
 
 func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) error {
+	clientAddr := remoteAddress(client)
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
 		_ = writeReply(client, repGeneralFailure, nil, 0)
@@ -622,7 +631,7 @@ func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) erro
 		return fmt.Errorf("write udp associate reply: %w", err)
 	}
 	allowedClientIP, _ := addrFrom(client.RemoteAddr())
-	s.logger.Printf("UDP ASSOCIATE %s:%d relay=%s:%d", host, port, replyIP.String(), bindPort)
+	s.logger.Printf("client=%s UDP ASSOCIATE %s:%d relay=%s:%d", clientAddr, host, port, replyIP.String(), bindPort)
 
 	closed := make(chan struct{})
 	go func() {
@@ -656,7 +665,7 @@ func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) erro
 				default:
 				}
 				if time.Since(lastActivity) > idleTimeout {
-					s.logger.Printf("udp associate idle timeout: %s", idleTimeout)
+					s.logger.Printf("client=%s udp associate idle timeout: %s", clientAddr, idleTimeout)
 					return nil
 				}
 				continue
@@ -679,31 +688,31 @@ func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) erro
 			if err != nil {
 				s.udpParseErrorTotal.Add(1)
 				s.udpPacketsDropTotal.Add(1)
-				s.logger.Printf("udp parse failed from %s: %v", src.String(), err)
+				s.logger.Printf("client=%s udp parse failed from %s: %v", clientAddr, src.String(), err)
 				continue
 			}
 			if dgram.Frag != 0 {
 				s.udpFragDropTotal.Add(1)
 				s.udpPacketsDropTotal.Add(1)
-				s.logger.Printf("udp fragment not supported from %s frag=%d", src.String(), dgram.Frag)
+				s.logger.Printf("client=%s udp fragment not supported from %s frag=%d", clientAddr, src.String(), dgram.Frag)
 				continue
 			}
 			if s.shouldRejectUDPHost(dgram.Host) {
 				s.udpPolicyRejectTotal.Add(1)
 				s.udpPacketsDropTotal.Add(1)
-				s.logger.Printf("udp reject host=%s", dgram.Host)
+				s.logger.Printf("client=%s udp reject host=%s", clientAddr, dgram.Host)
 				continue
 			}
 			dst, err := resolveUDPAddr(dgram.Host, dgram.Port)
 			if err != nil {
 				s.udpPacketsDropTotal.Add(1)
-				s.logger.Printf("udp resolve failed %s:%d: %v", dgram.Host, dgram.Port, err)
+				s.logger.Printf("client=%s udp resolve failed %s:%d: %v", clientAddr, dgram.Host, dgram.Port, err)
 				continue
 			}
 			seenTargets[dst.String()] = time.Now()
 			if _, err := udpConn.WriteToUDP(dgram.Payload, dst); err != nil {
 				s.udpPacketsDropTotal.Add(1)
-				s.logger.Printf("udp forward failed to %s: %v", dst.String(), err)
+				s.logger.Printf("client=%s udp forward failed to %s: %v", clientAddr, dst.String(), err)
 			} else {
 				s.udpPacketsInTotal.Add(1)
 			}
@@ -722,12 +731,12 @@ func (s *Server) handleUDPAssociate(client net.Conn, host string, port int) erro
 		if err != nil {
 			s.udpParseErrorTotal.Add(1)
 			s.udpPacketsDropTotal.Add(1)
-			s.logger.Printf("udp build response failed from %s: %v", src.String(), err)
+			s.logger.Printf("client=%s udp build response failed from %s: %v", clientAddr, src.String(), err)
 			continue
 		}
 		if _, err := udpConn.WriteToUDP(out, clientUDPAddr); err != nil {
 			s.udpPacketsDropTotal.Add(1)
-			s.logger.Printf("udp relay back to client failed %s: %v", clientUDPAddr.String(), err)
+			s.logger.Printf("client=%s udp relay back to client failed %s: %v", clientAddr, clientUDPAddr.String(), err)
 		} else {
 			s.udpPacketsOutTotal.Add(1)
 		}

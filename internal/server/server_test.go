@@ -19,6 +19,15 @@ import (
 	"gomitm/internal/policy"
 )
 
+type connWithRemoteAddr struct {
+	net.Conn
+	remoteAddr net.Addr
+}
+
+func (c connWithRemoteAddr) RemoteAddr() net.Addr {
+	return c.remoteAddr
+}
+
 func TestApplyRewriteReject200(t *testing.T) {
 	s := &Server{rewrite: []policy.RewriteRule{{
 		Pattern: regexp.MustCompile(`^https://example\.com/foo$`),
@@ -537,6 +546,149 @@ func TestHandleGreetingWithUserPassAuthFailure(t *testing.T) {
 
 	if err := <-errCh; err == nil {
 		t.Fatal("expected auth failure")
+	}
+}
+
+func TestHandleConnLogsRemoteAddressOnAuthFailure(t *testing.T) {
+	var logs bytes.Buffer
+	s := &Server{
+		authUser: "alice",
+		authPass: "secret",
+		logger:   log.New(&logs, "", 0),
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(2 * time.Second))
+
+	done := make(chan struct{})
+	go func() {
+		s.handleConn(connWithRemoteAddr{
+			Conn:       server,
+			remoteAddr: &net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 49152},
+		})
+		close(done)
+	}()
+
+	if _, err := client.Write([]byte{0x05, 0x01, authUserPass}); err != nil {
+		t.Fatalf("write greeting failed: %v", err)
+	}
+	methodResp := make([]byte, 2)
+	if _, err := io.ReadFull(client, methodResp); err != nil {
+		t.Fatalf("read method response failed: %v", err)
+	}
+	if methodResp[1] != authUserPass {
+		t.Fatalf("unexpected auth method: %v", methodResp)
+	}
+
+	user := []byte("alice")
+	password := []byte("wrong")
+	authReq := append([]byte{0x01, byte(len(user))}, user...)
+	authReq = append(authReq, byte(len(password)))
+	authReq = append(authReq, password...)
+	if _, err := client.Write(authReq); err != nil {
+		t.Fatalf("write auth request failed: %v", err)
+	}
+	authResp := make([]byte, 2)
+	if _, err := io.ReadFull(client, authResp); err != nil {
+		t.Fatalf("read auth response failed: %v", err)
+	}
+	if authResp[1] != 0x01 {
+		t.Fatalf("unexpected auth response: %v", authResp)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleConn did not return")
+	}
+
+	got := logs.String()
+	if !strings.Contains(got, "client=203.0.113.7:49152 socks greeting failed: socks authentication failed") {
+		t.Fatalf("missing client address in auth failure log: %q", got)
+	}
+	for _, secret := range []string{"alice", "secret", "wrong"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("auth failure log leaked credential %q: %q", secret, got)
+		}
+	}
+}
+
+func TestHandleConnLogsRemoteAddressAndTargetOnConnect(t *testing.T) {
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream failed: %v", err)
+	}
+	defer upstream.Close()
+	upstreamAddr := upstream.Addr().(*net.TCPAddr)
+	accepted := make(chan struct{})
+	go func() {
+		conn, acceptErr := upstream.Accept()
+		if acceptErr == nil {
+			_ = conn.Close()
+		}
+		close(accepted)
+	}()
+
+	var logs bytes.Buffer
+	s := &Server{
+		cfg:    Config{DialTimeout: time.Second},
+		logger: log.New(&logs, "", 0),
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(2 * time.Second))
+	done := make(chan struct{})
+	go func() {
+		s.handleConn(connWithRemoteAddr{
+			Conn:       server,
+			remoteAddr: &net.TCPAddr{IP: net.ParseIP("198.51.100.9"), Port: 54321},
+		})
+		close(done)
+	}()
+
+	if _, err := client.Write([]byte{0x05, 0x01, authNoAuth}); err != nil {
+		t.Fatalf("write greeting failed: %v", err)
+	}
+	methodResp := make([]byte, 2)
+	if _, err := io.ReadFull(client, methodResp); err != nil {
+		t.Fatalf("read method response failed: %v", err)
+	}
+	if methodResp[1] != authNoAuth {
+		t.Fatalf("unexpected auth method: %v", methodResp)
+	}
+
+	ip := upstreamAddr.IP.To4()
+	request := []byte{
+		0x05, cmdConnect, 0x00, atypIPv4,
+		ip[0], ip[1], ip[2], ip[3],
+		byte(upstreamAddr.Port >> 8), byte(upstreamAddr.Port),
+	}
+	if _, err := client.Write(request); err != nil {
+		t.Fatalf("write connect request failed: %v", err)
+	}
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read connect reply failed: %v", err)
+	}
+	if reply[1] != repSucceeded {
+		t.Fatalf("unexpected connect reply: %v", reply)
+	}
+	_ = client.Close()
+
+	select {
+	case <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream did not accept connection")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleConn did not return")
+	}
+
+	want := "client=198.51.100.9:54321 TCP " + upstreamAddr.String()
+	if got := logs.String(); !strings.Contains(got, want) {
+		t.Fatalf("missing client and target in connect log: %q", got)
 	}
 }
 
